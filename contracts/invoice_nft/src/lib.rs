@@ -98,11 +98,13 @@ impl InvoiceContract {
         current_id
     }
 
-    // 2. GET: Read invoice details
-    pub fn get_invoice(env: Env, id: u64) -> Option<Invoice> {
-        env.storage().instance().get(&DataKey::Invoice(id))
-    }
-
+   // 2. GET: Read invoice details (throws error if not found)
+    pub fn get_invoice(env: Env, id: u64) -> Invoice {
+        env.storage().instance()
+            .get(&DataKey::Invoice(id))
+            .unwrap_or_else(|| panic!("InvoiceNotFound"))
+}
+    
     // 3. REPAY: Mark the invoice as paid
     pub fn repay(env: Env, id: u64) {
         let mut invoice: Invoice = env.storage().instance().get(&DataKey::Invoice(id)).expect("Invoice not found");
