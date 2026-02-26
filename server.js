@@ -1,6 +1,7 @@
 const express = require('express');
 const rateLimit = require('express-rate-limit');
 const axios = require('axios');
+const packageJson = require('./package.json');
 
 require('dotenv').config();
 
@@ -71,6 +72,10 @@ app.get('/api/v1/prices', async (req, res) => {
 
 app.get('/api/v1/test', (req, res) => {
   res.json({ message: 'Test endpoint working' });
+});
+
+app.get('/api/v1/version', (req, res) => {
+  res.json({ version: packageJson.version });
 });
 
 app.listen(PORT, () => {
