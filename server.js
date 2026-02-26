@@ -1,5 +1,6 @@
 const express = require('express');
 const rateLimit = require('express-rate-limit');
+const axios = require('axios');
 
 require('dotenv').config();
 
@@ -16,6 +17,8 @@ const limiter = rateLimit({
   legacyHeaders: false,
 });
 
+const priceCache = {};
+const CACHE_DURATION = 60 * 1000;
 app.use(express.json());
 
 app.get('/health', (req, res) => {
@@ -27,12 +30,43 @@ app.get('/health', (req, res) => {
 
 app.use('/api/v1/', limiter);
 
-app.get('/api/v1/prices', (req, res) => {
-  res.json({
-    bitcoin: { usd: 45000, eur: 38000 },
-    ethereum: { usd: 3000, eur: 2500 },
-    timestamp: new Date().toISOString()
-  });
+async function fetchPrices() {
+  try {
+    const response = await axios.get('https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum&vs_currencies=usd,eur');
+    return response.data;
+  } catch (error) {
+    console.error('Error fetching prices:', error.message);
+    throw error;
+  }
+}
+
+app.get('/api/v1/prices', async (req, res) => {
+  const now = Date.now();
+  
+  if (priceCache.data && (now - priceCache.timestamp) < CACHE_DURATION) {
+    return res.json({
+      ...priceCache.data,
+      cached: true,
+      timestamp: new Date(priceCache.timestamp).toISOString()
+    });
+  }
+
+  try {
+    const prices = await fetchPrices();
+    priceCache.data = prices;
+    priceCache.timestamp = now;
+    
+    res.json({
+      ...prices,
+      cached: false,
+      timestamp: new Date(now).toISOString()
+    });
+  } catch (error) {
+    res.status(500).json({
+      error: 'Failed to fetch prices',
+      message: error.message
+    });
+  }
 });
 
 app.get('/api/v1/test', (req, res) => {

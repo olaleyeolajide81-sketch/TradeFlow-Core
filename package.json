@@ -1,1 +1,18 @@
-{"name":"tradeflow-core","version":"1.0.0","description":"![Build Status](https://img.shields.io/badge/build-passing-brightgreen) ![Soroban](https://img.shields.io/badge/soroban-ready-orange) ![License](https://img.shields.io/badge/license-MIT-blue)","main":"server.js","scripts":{"test":"echo \"Error: no test specified\" && exit 1","start":"node server.js"},"keywords":[],"author":"","license":"ISC","dependencies":{"express":"^5.2.1","express-rate-limit":"^8.2.1"}}
+{
+  "name": "tradeflow-core",
+  "version": "1.0.0",
+  "description": "![Build Status](https://img.shields.io/badge/build-passing-brightgreen) ![Soroban](https://img.shields.io/badge/soroban-ready-orange) ![License](https://img.shields.io/badge/license-MIT-blue)",
+  "main": "server.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start": "node server.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "express": "^5.2.1",
+    "express-rate-limit": "^8.2.1",
+    "axios": "^1.13.5"
+  }
+}
