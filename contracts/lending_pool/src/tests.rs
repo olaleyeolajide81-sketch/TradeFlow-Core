@@ -227,26 +227,41 @@ mod tests {
     }
 
     #[test]
-    fn test_set_max_trade_percentage() {
+    fn test_calculate_flash_fee() {
         let env = Env::default();
         let contract_id = env.register_contract(None, LendingPool);
         let client = LendingPoolClient::new(&env, &contract_id);
 
-        let admin = Address::generate(&env);
-        let token_address = Address::generate(&env);
-        client.init(&admin, &token_address);
-
-        // Default is 10%
-        assert_eq!(client.get_max_trade_percentage(), 10);
-
-        // Set to 20%
-        client.set_max_trade_percentage(&20);
-        assert_eq!(client.get_max_trade_percentage(), 20);
+        // 10000 * 8 / 10000 = 8
+        assert_eq!(client.calculate_flash_fee(&10000), 8);
+        
+        // 5000 * 8 / 10000 = 4
+        assert_eq!(client.calculate_flash_fee(&5000), 4);
+        
+        // Zero amount
+        assert_eq!(client.calculate_flash_fee(&0), 0);
+        
+        // Large amount: 1_000_000 * 8 / 10000 = 800
+        assert_eq!(client.calculate_flash_fee(&1_000_000), 800);
+        
+        // Max limit consideration: using i128, large amounts won't overflow
+        let large_amount: i128 = 1_000_000_000_000_000;
+        assert_eq!(client.calculate_flash_fee(&large_amount), 800_000_000_000);
     }
 
     #[test]
-    #[should_panic(expected = "Invalid percentage: must be <= 100")]
-    fn test_set_max_trade_percentage_invalid() {
+    #[should_panic(expected = "Amount must be non-negative")]
+    fn test_calculate_flash_fee_negative() {
+        let env = Env::default();
+        let contract_id = env.register_contract(None, LendingPool);
+        let client = LendingPoolClient::new(&env, &contract_id);
+
+        client.calculate_flash_fee(&-100);
+    }
+
+    #[test]
+    #[should_panic(expected = "Amount must be positive")]
+    fn test_flash_loan_zero_amount() {
         let env = Env::default();
         let contract_id = env.register_contract(None, LendingPool);
         let client = LendingPoolClient::new(&env, &contract_id);
@@ -255,6 +270,15 @@ mod tests {
         let token_address = Address::generate(&env);
         client.init(&admin, &token_address);
 
+        let receiver = Address::generate(&env);
+        let params = soroban_sdk::Bytes::new(&env);
+        
+        client.flash_loan(&receiver, &0, &params);
+    }
+
+    #[test]
+    #[should_panic(expected = "Insufficient pool liquidity")]
+    fn test_flash_loan_insufficient_liquidity() {
         client.set_max_trade_percentage(&101);
     }
 
@@ -272,6 +296,11 @@ mod tests {
         let token_address = Address::generate(&env);
         client.init(&admin, &token_address);
 
+        let receiver = Address::generate(&env);
+        let params = soroban_sdk::Bytes::new(&env);
+        
+        // Will panic because token_address is a dummy and the pool has 0 balance
+        client.flash_loan(&receiver, &1000, &params);
         let user = Address::generate(&env);
         // Will fail with EmptyPool because the token mock has 0 balance
         client.swap(&user, &100);

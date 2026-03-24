@@ -71,6 +71,8 @@ impl InvoiceContract {
         payload.push_back(amount.into_val(env));
         payload.push_back(risk_score.into_val(env));
         
+        // Return true as a placeholder since the ed25519 logic is missing
+        // TODO: Implement actual ed25519_verify
         // Return true for tests. In production, implement real ed25519 verification.
         true
     }

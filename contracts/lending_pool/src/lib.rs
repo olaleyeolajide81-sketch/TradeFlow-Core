@@ -1,9 +1,14 @@
 #![no_std]
+use soroban_sdk::{contract, contractimpl, contracttype, token, Address, Env, BytesN, Bytes, symbol_short, Symbol, vec, Val};
 use soroban_sdk::{contract, contracterror, contractimpl, contracttype, token, Address, Env, BytesN, symbol_short, panic_with_error};
 
 #[cfg(test)]
 mod tests;
 
+/// Flash loan fee in basis points (8 bps = 0.08%)
+/// This fee compensates Liquidity Providers for temporary risk exposure
+/// while generating additional protocol revenue.
+const FLASH_LOAN_FEE_BPS: i128 = 8;
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
@@ -341,5 +346,66 @@ impl LendingPool {
         let token_addr: Address = env.storage().instance().get(&DataKey::TokenAddress).expect("Not initialized");
         let client = token::Client::new(&env, &token_addr);
         client.balance(&env.current_contract_address())
+    }
+
+    /// Calculates the flash loan fee for a given amount.
+    /// The fee is computed as amount * FLASH_LOAN_FEE_BPS / 10000.
+    /// Handles precision correctly by multiplying before dividing.
+    pub fn calculate_flash_fee(env: Env, amount: i128) -> i128 {
+        if amount < 0 {
+            panic!("Amount must be non-negative");
+        }
+        // amount * 8 / 10000
+        let fee = (amount * FLASH_LOAN_FEE_BPS) / 10_000;
+        fee
+    }
+
+    /// Executes a flash loan, transferring `amount` to `receiver` and expecting
+    /// `amount + calculate_flash_fee(amount)` to be returned.
+    /// 
+    /// # Flash Loan Fee & LP Share Value
+    /// A fee of 0.08% (8 bps) is charged on the borrowed amount.
+    /// Collected fees remain in the pool's reserves (the contract's token balance).
+    /// Because the pool balance increases while the total minted LP shares remain 
+    /// constant during this operation, the intrinsic value of all LP shares 
+    /// automatically increases, directly compensating Liquidity Providers for 
+    /// the temporary risk exposure.
+    /// 
+    /// # Callback Interface
+    /// The receiver contract must implement:
+    /// `flash_cb(amount: i128, fee: i128, params: Bytes)`
+    /// and must approve/transfer `amount + fee` back to the pool before returning.
+    pub fn flash_loan(env: Env, receiver: Address, amount: i128, params: Bytes) {
+        Self::check_paused(&env);
+        
+        if amount <= 0 {
+            panic!("Amount must be positive");
+        }
+
+        let token_addr: Address = env.storage().instance().get(&DataKey::TokenAddress).expect("Not initialized");
+        let client = token::Client::new(&env, &token_addr);
+        
+        let initial_balance = client.balance(&env.current_contract_address());
+        if initial_balance < amount {
+            panic!("Insufficient pool liquidity");
+        }
+
+        let fee = Self::calculate_flash_fee(env.clone(), amount);
+
+        // Transfer funds to receiver
+        client.transfer(&env.current_contract_address(), &receiver, &amount);
+
+        // Invoke the receiver's callback.
+        // The receiver must implement `flash_cb(amount: i128, fee: i128, params: Bytes)`
+        let args = vec![&env, amount.into_val(&env), fee.into_val(&env), params.into_val(&env)];
+        let _res: Val = env.invoke_contract(&receiver, &Symbol::new(&env, "flash_cb"), args);
+
+        // Verify repayment (borrowed_amount + calculated_fee)
+        let final_balance = client.balance(&env.current_contract_address());
+        if final_balance < initial_balance + fee {
+            panic!("Flash loan not repaid with fee");
+        }
+
+        env.events().publish((symbol_short!("flash_loan"), receiver), (amount, fee));
     }
 }
