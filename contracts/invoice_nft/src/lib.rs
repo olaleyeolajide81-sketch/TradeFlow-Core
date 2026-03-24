@@ -51,12 +51,15 @@ impl InvoiceContract {
             .expect("Backend pubkey not set");
         
         // Create message payload: (user_address, invoice_amount, risk_score)
-        let mut payload = Vec::new(&env);
-        payload.push_back(user.to_val());
-        payload.push_back(amount.into_val(&env));
-        payload.push_back(risk_score.into_val(&env));
+        let mut payload = Bytes::new(&env);
+        payload.append(&user.to_xdr(&env));
+        payload.append(&amount.to_xdr(&env));
+        payload.append(&risk_score.to_xdr(&env));
         
 
+        // Verifies the signature. Panics if invalid.
+        env.crypto().ed25519_verify(&backend_pubkey, &payload, signature);
+        true
     }
 
     // 1. MINT: Create a new Invoice NFT with signature verification

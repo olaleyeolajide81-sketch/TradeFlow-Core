@@ -1,88 +1,61 @@
 const express = require('express');
-const rateLimit = require('express-rate-limit');
-const axios = require('axios');
-const packageJson = require('./package.json');
-
+const helmet = require('helmet');
+const cors = require('cors');
 require('dotenv').config();
 
-function logWithTime(message) {
-  console.log(`[${new Date().toISOString()}] ${message}`);
-}
-
 const app = express();
-const PORT = process.env.PORT || 3000;
+const port = process.env.PORT || 3000;
 
-const limiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 100,
-  message: {
-    error: 'Too many requests from this IP, please try again after 15 minutes.'
-  },
-  standardHeaders: true,
-  legacyHeaders: false,
-});
-
-const priceCache = {};
-const CACHE_DURATION = 60 * 1000;
+// Security and middleware
+app.use(helmet());
+app.use(cors());
 app.use(express.json());
 
+// Mock data: A list of transactions to demonstrate pagination
+const transactions = Array.from({ length: 100 }, (_, i) => ({
+    id: `tx_${i + 1}`,
+    type: i % 2 === 0 ? 'deposit' : 'withdrawal',
+    amount: (Math.random() * 10000).toFixed(2),
+    currency: 'USDC',
+    timestamp: new Date(Date.now() - i * 3600000).toISOString(), // 1 hour apart
+    status: 'completed'
+}));
+
+// Health check
 app.get('/health', (req, res) => {
-  res.json({
-    status: 'OK',
-    timestamp: new Date().toISOString()
-  });
+    res.json({ status: 'ok', timestamp: Date.now() });
 });
 
-app.use('/api/v1/', limiter);
-
-async function fetchPrices() {
-  try {
-    const response = await axios.get('https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum&vs_currencies=usd,eur');
-    return response.data;
-  } catch (error) {
-    console.error('Error fetching prices:', error.message);
-    throw error;
-  }
-}
-
-app.get('/api/v1/prices', async (req, res) => {
-  const now = Date.now();
-  
-  if (priceCache.data && (now - priceCache.timestamp) < CACHE_DURATION) {
-    return res.json({
-      ...priceCache.data,
-      cached: true,
-      timestamp: new Date(priceCache.timestamp).toISOString()
-    });
-  }
-
-  try {
-    const prices = await fetchPrices();
-    priceCache.data = prices;
-    priceCache.timestamp = now;
-    
+// Contract info (from README_SERVER.md)
+app.get('/api/contracts', (req, res) => {
     res.json({
-      ...prices,
-      cached: false,
-      timestamp: new Date(now).toISOString()
+        invoice_nft: process.env.INVOICE_NFT_ID || 'CCYU3LOQI34VHVN3ZOSEBHHKL4YK36FMTOEGLRYDUDRGS7JOLLRKCEQM',
+        lending_pool: process.env.LENDING_POOL_ID || 'CDVJMVPLZJKXSJFDY5AWBOUIRN73BKU2SG674MQDH4GRE6BGBPQD33IQ'
     });
-  } catch (error) {
-    res.status(httpStatusCodes.INTERNAL_SERVER_ERROR).json({
-      error: 'Failed to fetch prices',
-      message: error.message
+});
+
+// Transactions endpoint with actual pagination logic (Issue #35)
+app.get('/api/transactions', (req, res) => {
+    // 1. Parse page and limit from query parameters (default to page 1, limit 10)
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+
+    // 2. Calculate startIndex and endIndex
+    const startIndex = (page - 1) * limit;
+    const endIndex = page * limit;
+
+    // 3. Slice the array to get the requested chunk
+    const paginatedData = transactions.slice(startIndex, endIndex);
+
+    // 4. Return data with totalCount
+    res.json({
+        data: paginatedData,
+        totalCount: transactions.length,
+        page: page,
+        limit: limit
     });
-  }
 });
 
-app.get('/api/v1/test', (req, res) => {
-  res.json({ message: 'Test endpoint working' });
-});
-
-app.get('/api/v1/version', (req, res) => {
-  res.json({ version: packageJson.version });
-});
-
-app.listen(PORT, () => {
-  logWithTime(`Server running on port ${PORT}`);
-  logWithTime(`Health check available at: http://localhost:${PORT}/health`);
+app.listen(port, () => {
+    console.log(`Server running on port ${port}`);
 });
