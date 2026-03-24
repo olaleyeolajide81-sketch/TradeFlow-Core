@@ -225,4 +225,55 @@ mod tests {
         // 5% of 1000 = 50 interest for 1 year
         assert_eq!(loan.interest, 50);
     }
+
+    #[test]
+    fn test_set_max_trade_percentage() {
+        let env = Env::default();
+        let contract_id = env.register_contract(None, LendingPool);
+        let client = LendingPoolClient::new(&env, &contract_id);
+
+        let admin = Address::generate(&env);
+        let token_address = Address::generate(&env);
+        client.init(&admin, &token_address);
+
+        // Default is 10%
+        assert_eq!(client.get_max_trade_percentage(), 10);
+
+        // Set to 20%
+        client.set_max_trade_percentage(&20);
+        assert_eq!(client.get_max_trade_percentage(), 20);
+    }
+
+    #[test]
+    #[should_panic(expected = "Invalid percentage: must be <= 100")]
+    fn test_set_max_trade_percentage_invalid() {
+        let env = Env::default();
+        let contract_id = env.register_contract(None, LendingPool);
+        let client = LendingPoolClient::new(&env, &contract_id);
+
+        let admin = Address::generate(&env);
+        let token_address = Address::generate(&env);
+        client.init(&admin, &token_address);
+
+        client.set_max_trade_percentage(&101);
+    }
+
+    // Note: We cannot easily test swap success/fail completely here without a real token contract 
+    // mock because client.balance() will panic or return 0, leading to EmptyPool.
+    // We can at least test the EmptyPool error when balance is 0.
+    #[test]
+    #[should_panic(expected = "Error(Contract, #3)")] // EmptyPool = 3
+    fn test_swap_empty_pool() {
+        let env = Env::default();
+        let contract_id = env.register_contract(None, LendingPool);
+        let client = LendingPoolClient::new(&env, &contract_id);
+
+        let admin = Address::generate(&env);
+        let token_address = Address::generate(&env);
+        client.init(&admin, &token_address);
+
+        let user = Address::generate(&env);
+        // Will fail with EmptyPool because the token mock has 0 balance
+        client.swap(&user, &100);
+    }
 }

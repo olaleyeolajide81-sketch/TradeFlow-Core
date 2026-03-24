@@ -49,6 +49,16 @@ pub enum DataKey {
     Loan(u64),    // Maps ID -> Loan
     LoanId,       // Tracks the next available loan ID
     BackendPubkey, // Backend public key for signature verification
+    MaxTradePercentage, // Maximum percentage of pool allowed per trade/borrow
+}
+
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
+#[repr(u32)]
+pub enum PoolError {
+    InsufficientLiquidity = 1,
+    TradeSizeTooLarge = 2,
+    EmptyPool = 3,
 }
 
 #[contract]
@@ -92,6 +102,22 @@ impl LendingPool {
         env.storage().instance().get(&DataKey::Paused).unwrap_or(false)
     }
 
+    // MAX TRADE PERCENTAGE: Set the max trade percentage (admin only)
+    pub fn set_max_trade_percentage(env: Env, percentage: u32) {
+        Self::require_admin(&env);
+        if percentage > 100 {
+            panic!("Invalid percentage: must be <= 100");
+        }
+        env.storage().instance().set(&DataKey::MaxTradePercentage, &percentage);
+        env.events().publish((symbol_short!("max_trade"), percentage), env.ledger().sequence());
+    }
+
+    // GET MAX TRADE PERCENTAGE
+    pub fn get_max_trade_percentage(env: Env) -> u32 {
+        // Default to 10% if not set
+        env.storage().instance().get(&DataKey::MaxTradePercentage).unwrap_or(10u32)
+    }
+
     // 2. DEPOSIT: LPs add capital to the pool
     pub fn deposit(env: Env, from: Address, amount: i128) {
         Self::check_paused(&env);
@@ -107,24 +133,46 @@ impl LendingPool {
         env.events().publish((symbol_short!("deposit"), from), amount);
     }
 
-    // 3. BORROW: Borrow against an invoice (Simplified)
-    pub fn borrow(env: Env, borrower: Address, amount: i128) {
+    // 3. SWAP / BORROW: Withdraw/Borrow against an invoice (Simplified with max trade protection)
+    pub fn swap(env: Env, user: Address, amount_in: i128) -> Result<(), PoolError> {
         Self::check_paused(&env);
-        borrower.require_auth();
+        user.require_auth();
 
-        // 1. Check if the pool has enough funds
+        // 1. Check total pool reserves
         let token_addr: Address = env.storage().instance().get(&DataKey::TokenAddress).expect("Not initialized");
         let client = token::Client::new(&env, &token_addr);
         
-        let pool_balance = client.balance(&env.current_contract_address());
-        if amount > pool_balance {
-            panic!("Insufficient pool liquidity");
+        let total_reserves = client.balance(&env.current_contract_address());
+        if total_reserves == 0 {
+            return Err(PoolError::EmptyPool);
         }
 
-        // 2. Transfer funds Contract -> Borrower
-        client.transfer(&env.current_contract_address(), &borrower, &amount);
+        // 2. Compute max allowed trade size based on configurable percentage
+        let max_trade_pct = Self::get_max_trade_percentage(env.clone());
+        let max_allowed = (total_reserves * (max_trade_pct as i128)) / 100;
 
-        env.events().publish((symbol_short!("borrow"), borrower), amount);
+        // 3. Validation check against max allowed threshold
+        if amount_in > max_allowed {
+            // Reverts transaction with specific error type. 
+            // Note: Soroban contracterror enums cannot carry payloads.
+            // The frontend should catch TradeSizeTooLarge and display appropriate messages.
+            return Err(PoolError::TradeSizeTooLarge);
+        }
+
+        if amount_in > total_reserves {
+            return Err(PoolError::InsufficientLiquidity);
+        }
+
+        // 4. Transfer funds Contract -> User
+        client.transfer(&env.current_contract_address(), &user, &amount_in);
+
+        env.events().publish((symbol_short!("swap"), user), amount_in);
+        Ok(())
+    }
+
+    // Legacy borrow function mapped to swap logic for compatibility
+    pub fn borrow(env: Env, borrower: Address, amount: i128) {
+        Self::swap(env, borrower, amount).unwrap();
     }
 
     // Helper function to calculate interest (5% APY)

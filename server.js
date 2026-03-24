@@ -2,6 +2,7 @@ const express = require('express');
 const rateLimit = require('express-rate-limit');
 const axios = require('axios');
 const packageJson = require('./package.json');
+const httpStatusCodes = require('./utils/httpStatusCodes');
 
 require('dotenv').config();
 
@@ -80,6 +81,14 @@ app.get('/api/v1/test', (req, res) => {
 
 app.get('/api/v1/version', (req, res) => {
   res.json({ version: packageJson.version });
+});
+
+app.get('/api/contracts', (req, res) => {
+  res.json({
+    invoice_nft: process.env.INVOICE_NFT_ID || 'CCYU3LOQI34VHVN3ZOSEBHHKL4YK36FMTOEGLRYDUDRGS7JOLLRKCEQM',
+    lending_pool: process.env.LENDING_POOL_ID || 'CDVJMVPLZJKXSJFDY5AWBOUIRN73BKU2SG674MQDH4GRE6BGBPQD33IQ',
+    network: 'testnet'
+  });
 });
 
 app.listen(PORT, () => {
