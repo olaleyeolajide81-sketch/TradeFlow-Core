@@ -1,7 +1,24 @@
 #![no_std]
-use soroban_sdk::{contract, contractimpl, contracttype, token, Address, Env, BytesN, symbol_short};
+use soroban_sdk::{contract, contracterror, contractimpl, contracttype, token, Address, Env, BytesN, symbol_short, panic_with_error};
 
+#[cfg(test)]
 mod tests;
+
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
+#[repr(u32)]
+pub enum Error {
+    NotInitialized = 1,
+    ContractPaused = 2,
+    InsufficientLiquidity = 3,
+    LoanNotFound = 4,
+    LoanAlreadyRepaid = 5,
+    LoanDefaulted = 6,
+    InsufficientBalance = 7,
+    CannotLiquidateHealthyLoan = 8,
+    Unauthorized = 9,
+    MathOverflow = 10,
+}
 
 #[contracttype]
 #[derive(Clone)]
@@ -111,17 +128,26 @@ impl LendingPool {
     }
 
     // Helper function to calculate interest (5% APY)
-    fn calculate_interest(principal: i128, start_time: u64, end_time: u64) -> i128 {
+    fn calculate_interest(principal: i128, start_time: u64, end_time: u64) -> Result<i128, Error> {
         const YEAR_IN_SECONDS: u64 = 31_536_000; // 365.25 days
         const APY_BPS: u64 = 500; // 5% expressed in basis points
         
         if end_time <= start_time {
-            return 0;
+            return Ok(0);
         }
         
-        let duration = end_time - start_time;
-        let interest = principal * APY_BPS as i128 * duration as i128 / (10_000 * YEAR_IN_SECONDS as i128);
-        interest
+        // Use checked_sub to prevent underflow
+        let duration = end_time.checked_sub(start_time).ok_or(Error::MathOverflow)?;
+        
+        // Calculate interest using checked_mul and checked_div to prevent overflow
+        // principal * APY_BPS * duration / (10_000 * YEAR_IN_SECONDS)
+        let interest_part1 = principal.checked_mul(APY_BPS as i128).ok_or(Error::MathOverflow)?;
+        let interest_part2 = interest_part1.checked_mul(duration as i128).ok_or(Error::MathOverflow)?;
+        
+        let denominator = 10_000_i128.checked_mul(YEAR_IN_SECONDS as i128).ok_or(Error::MathOverflow)?;
+        let interest = interest_part2.checked_div(denominator).ok_or(Error::MathOverflow)?;
+        
+        Ok(interest)
     }
 
     // Helper function to extend storage TTL
@@ -143,10 +169,12 @@ impl LendingPool {
         borrower.require_auth();
 
         let current_time = env.ledger().timestamp();
-        let interest = Self::calculate_interest(principal, current_time, due_date);
+        let interest = Self::calculate_interest(principal, current_time, due_date)
+            .unwrap_or_else(|_| panic_with_error!(&env, Error::MathOverflow));
 
-        let mut loan_id = env.storage().instance().get(&DataKey::LoanId).unwrap_or(0u64);
-        loan_id += 1;
+        // Use checked_add to prevent overflow when generating new loan IDs
+        let loan_id_current = env.storage().instance().get(&DataKey::LoanId).unwrap_or(0u64);
+        let loan_id = loan_id_current.checked_add(1).unwrap_or_else(|| panic_with_error!(&env, Error::MathOverflow));
 
         let loan = Loan {
             id: loan_id,
@@ -190,8 +218,12 @@ impl LendingPool {
         let client = token::Client::new(&env, &token_addr);
 
         let current_time = env.ledger().timestamp();
-        let current_interest = Self::calculate_interest(loan.principal, loan.start_time, current_time);
-        let total_repayment = loan.principal + current_interest;
+        let current_interest = Self::calculate_interest(loan.principal, loan.start_time, current_time)
+            .unwrap_or_else(|_| panic_with_error!(&env, Error::MathOverflow));
+            
+        // Use checked_add to prevent overflow when calculating total repayment
+        let total_repayment = loan.principal.checked_add(current_interest)
+            .unwrap_or_else(|| panic_with_error!(&env, Error::MathOverflow));
 
         // Check borrower's USDC balance
         let borrower_balance = client.balance(&loan.borrower);

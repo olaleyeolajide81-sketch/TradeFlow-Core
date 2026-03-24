@@ -1,21 +1,6 @@
 use soroban_sdk::contracterror;
 use crate::LendingPool;
 
-#[contracterror]
-#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
-#[repr(u32)]
-pub enum Error {
-    NotInitialized = 1,
-    ContractPaused = 2,
-    InsufficientLiquidity = 3,
-    LoanNotFound = 4,
-    LoanAlreadyRepaid = 5,
-    LoanDefaulted = 6,
-    InsufficientBalance = 7,
-    CannotLiquidateHealthyLoan = 8,
-    Unauthorized = 9,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -184,6 +169,24 @@ mod tests {
 
         let loan = client.get_loan(&loan_id).unwrap();
         assert!(loan.is_defaulted);
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #10)")]
+    fn test_math_overflow_in_create_loan() {
+        let env = Env::default();
+        let contract_id = env.register_contract(None, LendingPool);
+        let client = LendingPoolClient::new(&env, &contract_id);
+
+        let admin = Address::generate(&env);
+        let token_address = Address::generate(&env);
+        client.init(&admin, &token_address);
+
+        let borrower = Address::generate(&env);
+        let due_date = env.ledger().timestamp() + 86400;
+        
+        // This will cause an overflow in calculate_interest when multiplied by APY
+        client.create_loan(&borrower, &1, &i128::MAX, &due_date);
     }
 
     #[test]
