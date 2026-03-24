@@ -1,6 +1,6 @@
 #![no_std]
 
-use soroban_sdk::{contract, contractimpl, contracttype, Address, Bytes, BytesN, Env, Map};
+use soroban_sdk::{contract, contractimpl, contracttype, symbol_short, Address, Bytes, BytesN, Env, Map};
 
 mod tests;
 
@@ -9,6 +9,7 @@ pub enum DataKey {
     FeeTo, // The address that receives protocol fees
     Pools, // Map of (TokenA, TokenB) -> PoolAddress
     PoolWasmHash, // The Wasm hash of the Pool contract to deploy
+    Admin, // The address of the factory admin
 }
 
 #[contract]
@@ -20,16 +21,18 @@ impl FactoryContract {
     ///
     /// # Arguments
     /// * `env` - The Soroban environment.
+    /// * `admin` - The address of the factory admin.
     /// * `fee_to` - The address where protocol fees will be sent.
     /// * `pool_wasm_hash` - The WASM hash of the liquidity pool contract code.
     ///
     /// # Panics
     /// If the contract has already been initialized.
-    pub fn initialize_factory(env: Env, fee_to: Address, pool_wasm_hash: BytesN<32>) {
+    pub fn initialize_factory(env: Env, admin: Address, fee_to: Address, pool_wasm_hash: BytesN<32>) {
         if env.storage().instance().has(&DataKey::FeeTo) {
             panic!("Factory has already been initialized");
         }
         env.storage().instance().set(&DataKey::FeeTo, &fee_to);
+        env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::PoolWasmHash, &pool_wasm_hash);
     }
 
@@ -93,5 +96,51 @@ impl FactoryContract {
         env.storage().instance().set(&DataKey::Pools, &pools);
 
         pool_address
+    }
+
+    /// Sets the recipient of the protocol fees.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    /// * `fee_to` - The new address to receive fees.
+    pub fn set_fee_recipient(env: Env, fee_to: Address) {
+        let admin: Address = env.storage().instance().get(&DataKey::Admin).expect("Not initialized");
+        admin.require_auth();
+
+        let old_fee_to: Address = env.storage().instance().get(&DataKey::FeeTo).unwrap();
+        
+        env.storage().instance().set(&DataKey::FeeTo, &fee_to);
+
+        // Emit event: ("Admin", "SetFeeTo", old_fee_to, new_fee_to)
+        env.events().publish(
+            (symbol_short!("Admin"), symbol_short!("SetFeeTo")),
+            (old_fee_to, fee_to)
+        );
+    }
+
+    /// Toggles the status of a specific pool.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    /// * `token_a` - The first token of the pair.
+    /// * `token_b` - The second token of the pair.
+    /// * `status` - The new status (e.g., 0 = Paused, 1 = Active).
+    pub fn toggle_pool_status(env: Env, token_a: Address, token_b: Address, status: u32) {
+        let admin: Address = env.storage().instance().get(&DataKey::Admin).expect("Not initialized");
+        admin.require_auth();
+
+        // Verify pool exists
+        let pool_addr = Self::get_pool(env.clone(), token_a.clone(), token_b.clone());
+        if pool_addr.is_none() {
+            panic!("Pool does not exist");
+        }
+
+        // Emit event: ("Admin", "PoolStatus", token_a, token_b) -> status
+        // Note: The factory doesn't store the status locally in this implementation,
+        // but emits the event for indexers and transparency.
+        env.events().publish(
+            (symbol_short!("Admin"), symbol_short!("PoolStatus"), token_a, token_b),
+            status
+        );
     }
 }
