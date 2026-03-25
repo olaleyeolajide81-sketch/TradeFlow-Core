@@ -13,6 +13,14 @@ The system consists of two decoupled smart contracts:
 1.  **`invoice_nft`**: A standard-compliant NFT representing a verified invoice. It holds metadata (IPFS hash, face value, currency, due date).
 2.  **`lending_pool`**: An escrow vault where liquidity providers deposit stablecoins (USDC). It accepts `invoice_nft` as collateral to automate loan origination and repayment.
 
+## 💾 Storage Architecture
+
+To optimize for ledger rent costs and scalability, the protocol uses a tiered storage approach:
+
+- **Instance Storage**: Global configuration settings (Admin, Paused state) and counters (Loan IDs).
+- **Persistent Storage**: High-cardinality user data (Loans, Invoices, Whitelists).
+- **Temporary Storage**: Used for transient data where applicable.
+
 ## ⛓️ Live Testnet Deployments
 
 The following contracts are currently active for frontend integration and testing.

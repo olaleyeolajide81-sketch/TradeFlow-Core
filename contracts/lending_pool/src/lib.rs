@@ -1,6 +1,5 @@
 #![no_std]
-use soroban_sdk::{contract, contractimpl, contracttype, token, Address, Env, BytesN, Bytes, symbol_short, Symbol, vec, Val};
-use soroban_sdk::{contract, contracterror, contractimpl, contracttype, token, Address, Env, BytesN, symbol_short, panic_with_error};
+use soroban_sdk::{contract, contracterror, contractimpl, contracttype, token, Address, Env, BytesN, Bytes, symbol_short, Symbol, vec, Val, panic_with_error};
 
 #[cfg(test)]
 mod tests;
@@ -23,6 +22,8 @@ pub enum Error {
     CannotLiquidateHealthyLoan = 8,
     Unauthorized = 9,
     MathOverflow = 10,
+    EmptyPool = 11,
+    TradeSizeTooLarge = 12,
 }
 
 #[contracttype]
@@ -56,6 +57,7 @@ pub enum DataKey {
     BackendPubkey, // Backend public key for signature verification
     WhitelistActive,
     Whitelisted(Address),
+    MaxTradePercentage,
 }
 
 #[contract]
@@ -99,14 +101,16 @@ impl LendingPool {
     pub fn set_whitelist_active(env: Env, active: bool) {
         Self::require_admin(&env);
         env.storage().instance().set(&DataKey::WhitelistActive, &active);
-        Self::extend_storage_ttl(&env);
+        Self::extend_instance_ttl(&env);
     }
 
     // ADD TO WHITELIST: Add address to approved LPs (admin only)
     pub fn add_to_whitelist(env: Env, address: Address) {
         Self::require_admin(&env);
-        env.storage().instance().set(&DataKey::Whitelisted(address), &true);
-        Self::extend_storage_ttl(&env);
+        env.storage().persistent().set(&DataKey::Whitelisted(address.clone()), &true);
+        env.storage().persistent().extend_ttl(&DataKey::Whitelisted(address), 535_680, 535_680);
+        
+        Self::extend_instance_ttl(&env);
     }
 
     // GET PAUSE STATE: Check if contract is paused
@@ -137,9 +141,11 @@ impl LendingPool {
 
         // Check whitelist if active
         if env.storage().instance().get(&DataKey::WhitelistActive).unwrap_or(false) {
-            if !env.storage().instance().has(&DataKey::Whitelisted(from.clone())) {
+            if !env.storage().persistent().has(&DataKey::Whitelisted(from.clone())) {
                 panic!("NOT_WHITELISTED");
             }
+            // Extend TTL for the whitelist entry on access
+            env.storage().persistent().extend_ttl(&DataKey::Whitelisted(from), 535_680, 535_680);
         }
 
         let token_addr: Address = env.storage().instance().get(&DataKey::TokenAddress).expect("Not initialized");
@@ -153,7 +159,7 @@ impl LendingPool {
     }
 
     // 3. SWAP / BORROW: Withdraw/Borrow against an invoice (Simplified with max trade protection)
-    pub fn swap(env: Env, user: Address, amount_in: i128) -> Result<(), PoolError> {
+    pub fn swap(env: Env, user: Address, amount_in: i128) -> Result<(), Error> {
         Self::check_paused(&env);
         user.require_auth();
 
@@ -163,7 +169,7 @@ impl LendingPool {
         
         let total_reserves = client.balance(&env.current_contract_address());
         if total_reserves == 0 {
-            return Err(PoolError::EmptyPool);
+            return Err(Error::EmptyPool);
         }
 
         // 2. Compute max allowed trade size based on configurable percentage
@@ -175,11 +181,11 @@ impl LendingPool {
             // Reverts transaction with specific error type. 
             // Note: Soroban contracterror enums cannot carry payloads.
             // The frontend should catch TradeSizeTooLarge and display appropriate messages.
-            return Err(PoolError::TradeSizeTooLarge);
+            return Err(Error::TradeSizeTooLarge);
         }
 
         if amount_in > total_reserves {
-            return Err(PoolError::InsufficientLiquidity);
+            return Err(Error::InsufficientLiquidity);
         }
 
         // 4. Transfer funds Contract -> User
@@ -218,7 +224,7 @@ impl LendingPool {
     }
 
     // Helper function to extend storage TTL
-    fn extend_storage_ttl(env: &Env) {
+    fn extend_instance_ttl(env: &Env) {
         // Extend TTL to 535,680 ledgers (approx 30 days)
         env.storage().instance().extend_ttl(535_680, 535_680);
     }
@@ -227,7 +233,7 @@ impl LendingPool {
     pub fn set_backend_pubkey(env: Env, pubkey: BytesN<32>) {
         Self::require_admin(&env);
         env.storage().instance().set(&DataKey::BackendPubkey, &pubkey);
-        Self::extend_storage_ttl(&env);
+        Self::extend_instance_ttl(&env);
     }
 
     // CREATE LOAN: Create a new loan record
@@ -255,9 +261,10 @@ impl LendingPool {
             is_defaulted: false,
         };
 
-        env.storage().instance().set(&DataKey::Loan(loan_id), &loan);
+        env.storage().persistent().set(&DataKey::Loan(loan_id), &loan);
+        env.storage().persistent().extend_ttl(&DataKey::Loan(loan_id), 535_680, 535_680);
         env.storage().instance().set(&DataKey::LoanId, &loan_id);
-        Self::extend_storage_ttl(&env);
+        Self::extend_instance_ttl(&env);
 
         env.events().publish((symbol_short!("loan_create"), borrower), loan_id);
         loan_id
@@ -267,7 +274,7 @@ impl LendingPool {
     pub fn repay_loan(env: Env, loan_id: u64) {
         Self::check_paused(&env);
         
-        let mut loan: Loan = env.storage().instance().get(&DataKey::Loan(loan_id))
+        let mut loan: Loan = env.storage().persistent().get(&DataKey::Loan(loan_id))
             .expect("Loan not found");
         
         if loan.is_repaid {
@@ -303,8 +310,9 @@ impl LendingPool {
 
         // Update loan status
         loan.is_repaid = true;
-        env.storage().instance().set(&DataKey::Loan(loan_id), &loan);
-        Self::extend_storage_ttl(&env);
+        env.storage().persistent().set(&DataKey::Loan(loan_id), &loan);
+        env.storage().persistent().extend_ttl(&DataKey::Loan(loan_id), 535_680, 535_680);
+        Self::extend_instance_ttl(&env);
 
         // In a real implementation, we would transfer the NFT back to the borrower
         // For now, we just emit an event
@@ -315,7 +323,7 @@ impl LendingPool {
     pub fn liquidate(env: Env, loan_id: u64) {
         Self::check_paused(&env);
         
-        let mut loan: Loan = env.storage().instance().get(&DataKey::Loan(loan_id))
+        let mut loan: Loan = env.storage().persistent().get(&DataKey::Loan(loan_id))
             .expect("Loan not found");
         
         if loan.is_repaid {
@@ -343,8 +351,9 @@ impl LendingPool {
 
         // Update loan status
         loan.is_defaulted = true;
-        env.storage().instance().set(&DataKey::Loan(loan_id), &loan);
-        Self::extend_storage_ttl(&env);
+        env.storage().persistent().set(&DataKey::Loan(loan_id), &loan);
+        env.storage().persistent().extend_ttl(&DataKey::Loan(loan_id), 535_680, 535_680);
+        Self::extend_instance_ttl(&env);
 
         // In a real implementation, we would transfer the NFT to the liquidator
         env.events().publish((symbol_short!("loan_liquid"), liquidator), loan_id);
@@ -352,7 +361,12 @@ impl LendingPool {
 
     // GET LOAN: Retrieve loan details
     pub fn get_loan(env: Env, loan_id: u64) -> Option<Loan> {
-        env.storage().instance().get(&DataKey::Loan(loan_id))
+        let loan = env.storage().persistent().get(&DataKey::Loan(loan_id));
+        if loan.is_some() {
+            // Extend TTL on access
+            env.storage().persistent().extend_ttl(&DataKey::Loan(loan_id), 535_680, 535_680);
+        }
+        loan
     }
 
     // 4. VIEW: Check contract balance
