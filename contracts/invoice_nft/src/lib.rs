@@ -1,7 +1,22 @@
 #![no_std]
 use soroban_sdk::{contract, contractimpl, contracttype, Address, Env, Symbol, Vec, Bytes, BytesN, Val, IntoVal};
 
+#[cfg(test)]
 mod tests;
+
+use soroban_sdk::{contract, contracterror, contractimpl, contracttype, Address, Env, BytesN, symbol_short, Vec, panic_with_error};
+
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
+#[repr(u32)]
+pub enum Error {
+    InvoiceNotFound = 1,
+    InvoiceExpired = 2,
+    InvalidSignature = 3,
+    AlreadyRepaid = 4,
+    Unauthorized = 5,
+    MathOverflow = 6,
+}
 
 #[contracttype]
 #[derive(Clone)]
@@ -80,8 +95,11 @@ impl InvoiceContract {
         }
 
         // Get the current ID count
-        let mut current_id = env.storage().instance().get(&DataKey::TokenId).unwrap_or(0u64);
-        current_id += 1;
+        let current_id_value = env.storage().instance().get(&DataKey::TokenId).unwrap_or(0u64);
+        
+        // Use checked_add to prevent overflow when minting new NFTs
+        let current_id = current_id_value.checked_add(1)
+            .unwrap_or_else(|| panic_with_error!(&env, Error::MathOverflow));
 
         // Create the invoice object
         let invoice = Invoice {
@@ -98,16 +116,18 @@ impl InvoiceContract {
         Self::extend_storage_ttl(&env);
 
         // Emit an event (so our API can see it later)
-        env.events().publish((Symbol::new(&env, "mint"), owner), current_id);
+        env.events().publish((symbol_short!("mint"), owner), current_id);
 
         current_id
     }
 
-    // 2. GET: Read invoice details
-    pub fn get_invoice(env: Env, id: u64) -> Option<Invoice> {
-        env.storage().instance().get(&DataKey::Invoice(id))
-    }
-
+   // 2. GET: Read invoice details (throws error if not found)
+    pub fn get_invoice(env: Env, id: u64) -> Invoice {
+        env.storage().instance()
+            .get(&DataKey::Invoice(id))
+            .unwrap_or_else(|| panic!("InvoiceNotFound"))
+}
+    
     // 3. REPAY: Mark the invoice as paid
     pub fn repay(env: Env, id: u64) {
         let mut invoice: Invoice = env.storage().instance().get(&DataKey::Invoice(id)).expect("Invoice not found");
@@ -120,6 +140,6 @@ impl InvoiceContract {
         env.storage().instance().set(&DataKey::Invoice(id), &invoice);
         Self::extend_storage_ttl(&env);
         
-        env.events().publish((Symbol::new(&env, "repay"), invoice.owner), id);
+        env.events().publish((symbol_short!("repay"), invoice.owner), id);
     }
 }

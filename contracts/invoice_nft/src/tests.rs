@@ -1,21 +1,10 @@
-use soroban_sdk::{Address, Env, Symbol, contracterror};
-use crate::{InvoiceContract, Invoice, DataKey};
-
-#[contracterror]
-#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
-#[repr(u32)]
-pub enum Error {
-    InvoiceNotFound = 1,
-    InvoiceExpired = 2,
-    InvalidSignature = 3,
-    AlreadyRepaid = 4,
-    Unauthorized = 5,
-}
+use crate::InvoiceContract;
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use soroban_sdk::{testutils::Address as TestAddress, testutils::Bytes as TestBytes, Bytes};
+    use soroban_sdk::contractclient::InvoiceContractClient;
 
     #[test]
     fn test_mint_invoice_success() {
