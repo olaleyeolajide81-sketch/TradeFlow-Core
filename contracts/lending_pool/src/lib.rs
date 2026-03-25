@@ -1,7 +1,29 @@
 #![no_std]
-use soroban_sdk::{contract, contractimpl, contracttype, token, Address, Env, BytesN, symbol_short};
+use soroban_sdk::{contract, contractimpl, contracttype, token, Address, Env, BytesN, Bytes, symbol_short, Symbol, vec, Val};
+use soroban_sdk::{contract, contracterror, contractimpl, contracttype, token, Address, Env, BytesN, symbol_short, panic_with_error};
 
+#[cfg(test)]
 mod tests;
+
+/// Flash loan fee in basis points (8 bps = 0.08%)
+/// This fee compensates Liquidity Providers for temporary risk exposure
+/// while generating additional protocol revenue.
+const FLASH_LOAN_FEE_BPS: i128 = 8;
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
+#[repr(u32)]
+pub enum Error {
+    NotInitialized = 1,
+    ContractPaused = 2,
+    InsufficientLiquidity = 3,
+    LoanNotFound = 4,
+    LoanAlreadyRepaid = 5,
+    LoanDefaulted = 6,
+    InsufficientBalance = 7,
+    CannotLiquidateHealthyLoan = 8,
+    Unauthorized = 9,
+    MathOverflow = 10,
+}
 
 #[contracttype]
 #[derive(Clone)]
@@ -92,6 +114,22 @@ impl LendingPool {
         env.storage().instance().get(&DataKey::Paused).unwrap_or(false)
     }
 
+    // MAX TRADE PERCENTAGE: Set the max trade percentage (admin only)
+    pub fn set_max_trade_percentage(env: Env, percentage: u32) {
+        Self::require_admin(&env);
+        if percentage > 100 {
+            panic!("Invalid percentage: must be <= 100");
+        }
+        env.storage().instance().set(&DataKey::MaxTradePercentage, &percentage);
+        env.events().publish((symbol_short!("max_trade"), percentage), env.ledger().sequence());
+    }
+
+    // GET MAX TRADE PERCENTAGE
+    pub fn get_max_trade_percentage(env: Env) -> u32 {
+        // Default to 10% if not set
+        env.storage().instance().get(&DataKey::MaxTradePercentage).unwrap_or(10u32)
+    }
+
     // 2. DEPOSIT: LPs add capital to the pool
     pub fn deposit(env: Env, from: Address, amount: i128) {
         Self::check_paused(&env);
@@ -114,38 +152,69 @@ impl LendingPool {
         env.events().publish((symbol_short!("deposit"), from), amount);
     }
 
-    // 3. BORROW: Borrow against an invoice (Simplified)
-    pub fn borrow(env: Env, borrower: Address, amount: i128) {
+    // 3. SWAP / BORROW: Withdraw/Borrow against an invoice (Simplified with max trade protection)
+    pub fn swap(env: Env, user: Address, amount_in: i128) -> Result<(), PoolError> {
         Self::check_paused(&env);
-        borrower.require_auth();
+        user.require_auth();
 
-        // 1. Check if the pool has enough funds
+        // 1. Check total pool reserves
         let token_addr: Address = env.storage().instance().get(&DataKey::TokenAddress).expect("Not initialized");
         let client = token::Client::new(&env, &token_addr);
         
-        let pool_balance = client.balance(&env.current_contract_address());
-        if amount > pool_balance {
-            panic!("Insufficient pool liquidity");
+        let total_reserves = client.balance(&env.current_contract_address());
+        if total_reserves == 0 {
+            return Err(PoolError::EmptyPool);
         }
 
-        // 2. Transfer funds Contract -> Borrower
-        client.transfer(&env.current_contract_address(), &borrower, &amount);
+        // 2. Compute max allowed trade size based on configurable percentage
+        let max_trade_pct = Self::get_max_trade_percentage(env.clone());
+        let max_allowed = (total_reserves * (max_trade_pct as i128)) / 100;
 
-        env.events().publish((symbol_short!("borrow"), borrower), amount);
+        // 3. Validation check against max allowed threshold
+        if amount_in > max_allowed {
+            // Reverts transaction with specific error type. 
+            // Note: Soroban contracterror enums cannot carry payloads.
+            // The frontend should catch TradeSizeTooLarge and display appropriate messages.
+            return Err(PoolError::TradeSizeTooLarge);
+        }
+
+        if amount_in > total_reserves {
+            return Err(PoolError::InsufficientLiquidity);
+        }
+
+        // 4. Transfer funds Contract -> User
+        client.transfer(&env.current_contract_address(), &user, &amount_in);
+
+        env.events().publish((symbol_short!("swap"), user), amount_in);
+        Ok(())
+    }
+
+    // Legacy borrow function mapped to swap logic for compatibility
+    pub fn borrow(env: Env, borrower: Address, amount: i128) {
+        Self::swap(env, borrower, amount).unwrap();
     }
 
     // Helper function to calculate interest (5% APY)
-    fn calculate_interest(principal: i128, start_time: u64, end_time: u64) -> i128 {
+    fn calculate_interest(principal: i128, start_time: u64, end_time: u64) -> Result<i128, Error> {
         const YEAR_IN_SECONDS: u64 = 31_536_000; // 365.25 days
         const APY_BPS: u64 = 500; // 5% expressed in basis points
         
         if end_time <= start_time {
-            return 0;
+            return Ok(0);
         }
         
-        let duration = end_time - start_time;
-        let interest = principal * APY_BPS as i128 * duration as i128 / (10_000 * YEAR_IN_SECONDS as i128);
-        interest
+        // Use checked_sub to prevent underflow
+        let duration = end_time.checked_sub(start_time).ok_or(Error::MathOverflow)?;
+        
+        // Calculate interest using checked_mul and checked_div to prevent overflow
+        // principal * APY_BPS * duration / (10_000 * YEAR_IN_SECONDS)
+        let interest_part1 = principal.checked_mul(APY_BPS as i128).ok_or(Error::MathOverflow)?;
+        let interest_part2 = interest_part1.checked_mul(duration as i128).ok_or(Error::MathOverflow)?;
+        
+        let denominator = 10_000_i128.checked_mul(YEAR_IN_SECONDS as i128).ok_or(Error::MathOverflow)?;
+        let interest = interest_part2.checked_div(denominator).ok_or(Error::MathOverflow)?;
+        
+        Ok(interest)
     }
 
     // Helper function to extend storage TTL
@@ -167,10 +236,12 @@ impl LendingPool {
         borrower.require_auth();
 
         let current_time = env.ledger().timestamp();
-        let interest = Self::calculate_interest(principal, current_time, due_date);
+        let interest = Self::calculate_interest(principal, current_time, due_date)
+            .unwrap_or_else(|_| panic_with_error!(&env, Error::MathOverflow));
 
-        let mut loan_id = env.storage().instance().get(&DataKey::LoanId).unwrap_or(0u64);
-        loan_id += 1;
+        // Use checked_add to prevent overflow when generating new loan IDs
+        let loan_id_current = env.storage().instance().get(&DataKey::LoanId).unwrap_or(0u64);
+        let loan_id = loan_id_current.checked_add(1).unwrap_or_else(|| panic_with_error!(&env, Error::MathOverflow));
 
         let loan = Loan {
             id: loan_id,
@@ -214,8 +285,12 @@ impl LendingPool {
         let client = token::Client::new(&env, &token_addr);
 
         let current_time = env.ledger().timestamp();
-        let current_interest = Self::calculate_interest(loan.principal, loan.start_time, current_time);
-        let total_repayment = loan.principal + current_interest;
+        let current_interest = Self::calculate_interest(loan.principal, loan.start_time, current_time)
+            .unwrap_or_else(|_| panic_with_error!(&env, Error::MathOverflow));
+            
+        // Use checked_add to prevent overflow when calculating total repayment
+        let total_repayment = loan.principal.checked_add(current_interest)
+            .unwrap_or_else(|| panic_with_error!(&env, Error::MathOverflow));
 
         // Check borrower's USDC balance
         let borrower_balance = client.balance(&loan.borrower);
@@ -285,5 +360,66 @@ impl LendingPool {
         let token_addr: Address = env.storage().instance().get(&DataKey::TokenAddress).expect("Not initialized");
         let client = token::Client::new(&env, &token_addr);
         client.balance(&env.current_contract_address())
+    }
+
+    /// Calculates the flash loan fee for a given amount.
+    /// The fee is computed as amount * FLASH_LOAN_FEE_BPS / 10000.
+    /// Handles precision correctly by multiplying before dividing.
+    pub fn calculate_flash_fee(env: Env, amount: i128) -> i128 {
+        if amount < 0 {
+            panic!("Amount must be non-negative");
+        }
+        // amount * 8 / 10000
+        let fee = (amount * FLASH_LOAN_FEE_BPS) / 10_000;
+        fee
+    }
+
+    /// Executes a flash loan, transferring `amount` to `receiver` and expecting
+    /// `amount + calculate_flash_fee(amount)` to be returned.
+    /// 
+    /// # Flash Loan Fee & LP Share Value
+    /// A fee of 0.08% (8 bps) is charged on the borrowed amount.
+    /// Collected fees remain in the pool's reserves (the contract's token balance).
+    /// Because the pool balance increases while the total minted LP shares remain 
+    /// constant during this operation, the intrinsic value of all LP shares 
+    /// automatically increases, directly compensating Liquidity Providers for 
+    /// the temporary risk exposure.
+    /// 
+    /// # Callback Interface
+    /// The receiver contract must implement:
+    /// `flash_cb(amount: i128, fee: i128, params: Bytes)`
+    /// and must approve/transfer `amount + fee` back to the pool before returning.
+    pub fn flash_loan(env: Env, receiver: Address, amount: i128, params: Bytes) {
+        Self::check_paused(&env);
+        
+        if amount <= 0 {
+            panic!("Amount must be positive");
+        }
+
+        let token_addr: Address = env.storage().instance().get(&DataKey::TokenAddress).expect("Not initialized");
+        let client = token::Client::new(&env, &token_addr);
+        
+        let initial_balance = client.balance(&env.current_contract_address());
+        if initial_balance < amount {
+            panic!("Insufficient pool liquidity");
+        }
+
+        let fee = Self::calculate_flash_fee(env.clone(), amount);
+
+        // Transfer funds to receiver
+        client.transfer(&env.current_contract_address(), &receiver, &amount);
+
+        // Invoke the receiver's callback.
+        // The receiver must implement `flash_cb(amount: i128, fee: i128, params: Bytes)`
+        let args = vec![&env, amount.into_val(&env), fee.into_val(&env), params.into_val(&env)];
+        let _res: Val = env.invoke_contract(&receiver, &Symbol::new(&env, "flash_cb"), args);
+
+        // Verify repayment (borrowed_amount + calculated_fee)
+        let final_balance = client.balance(&env.current_contract_address());
+        if final_balance < initial_balance + fee {
+            panic!("Flash loan not repaid with fee");
+        }
+
+        env.events().publish((symbol_short!("flash_loan"), receiver), (amount, fee));
     }
 }

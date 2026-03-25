@@ -2,7 +2,8 @@
 resolver = "2"
 members = [
     "contracts/invoice_nft",
-    "contracts/lending_pool"
+    "contracts/lending_pool",
+    "contracts/amm_pool"
 ]
 
 [profile.release]

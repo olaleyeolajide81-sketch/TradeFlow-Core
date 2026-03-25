@@ -1,16 +1,4 @@
-use soroban_sdk::contracterror;
 use crate::InvoiceContract;
-
-#[contracterror]
-#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
-#[repr(u32)]
-pub enum Error {
-    InvoiceNotFound = 1,
-    InvoiceExpired = 2,
-    InvalidSignature = 3,
-    AlreadyRepaid = 4,
-    Unauthorized = 5,
-}
 
 #[cfg(test)]
 mod tests {

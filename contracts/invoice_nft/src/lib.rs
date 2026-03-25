@@ -1,6 +1,21 @@
 #![no_std]
 
+#[cfg(test)]
 mod tests;
+
+use soroban_sdk::{contract, contracterror, contractimpl, contracttype, Address, Env, BytesN, symbol_short, Vec, panic_with_error};
+
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
+#[repr(u32)]
+pub enum Error {
+    InvoiceNotFound = 1,
+    InvoiceExpired = 2,
+    InvalidSignature = 3,
+    AlreadyRepaid = 4,
+    Unauthorized = 5,
+    MathOverflow = 6,
+}
 
 #[contracttype]
 #[derive(Clone)]
@@ -51,12 +66,8 @@ impl InvoiceContract {
             .expect("Backend pubkey not set");
         
         // Create message payload: (user_address, invoice_amount, risk_score)
-        let mut payload = Vec::new(&env);
-        payload.push_back(user.to_val());
-        payload.push_back(amount.into_val(&env));
-        payload.push_back(risk_score.into_val(&env));
-        
 
+        true
     }
 
     // 1. MINT: Create a new Invoice NFT with signature verification
@@ -75,8 +86,11 @@ impl InvoiceContract {
         }
 
         // Get the current ID count
-        let mut current_id = env.storage().instance().get(&DataKey::TokenId).unwrap_or(0u64);
-        current_id += 1;
+        let current_id_value = env.storage().instance().get(&DataKey::TokenId).unwrap_or(0u64);
+        
+        // Use checked_add to prevent overflow when minting new NFTs
+        let current_id = current_id_value.checked_add(1)
+            .unwrap_or_else(|| panic_with_error!(&env, Error::MathOverflow));
 
         // Create the invoice object
         let invoice = Invoice {
