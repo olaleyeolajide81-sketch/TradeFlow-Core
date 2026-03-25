@@ -1081,6 +1081,26 @@ impl TradeFlow {
         upgrade_config.pending_upgrade
     }
     
+    // UPGRADE CONTRACT: Direct contract upgrade function (admin only)
+    pub fn upgrade_contract(env: Env, new_wasm_hash: BytesN<32>) {
+        // Get admin address and require authentication
+        let admin: Address = env.storage().instance().get(&DataKey::Admin)
+            .expect("Not initialized");
+        admin.require_auth();
+        
+        // Store old WASM hash for event logging
+        let old_wasm_hash = env.current_contract_address().contract_id();
+        
+        // Execute the upgrade using Soroban's native upgrade function
+        env.deployer().update_current_contract_wasm(new_wasm_hash);
+        
+        // Emit ContractUpgraded event with old and new WASM hashes
+        env.events().publish(
+            (Symbol::new(&env, "ContractUpgraded"), admin),
+            (old_wasm_hash, new_wasm_hash)
+        );
+    }
+    
     // EMERGENCY UPGRADE: Execute upgrade immediately in emergency (admin only)
     pub fn emergency_upgrade(env: Env, new_wasm_hash: BytesN<32>, reason: Symbol) {
         Self::require_admin(&env);
