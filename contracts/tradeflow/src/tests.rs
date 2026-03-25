@@ -3,7 +3,7 @@ use soroban_sdk::{
     token,
 };
 use crate::{
-    TradeFlow, LiquidityPosition, PendingFeeChange, PermitData, DataKey, TWAPConfig, PriceObservation,
+    TradeFlow, LiquidityPosition, PendingFeeChange, PermitData, DataKey, TWAPConfig, PriceObservation, BuybackConfig, FeeAccumulator,
     utils::fixed_point::{self, Q64},
 };
 
@@ -391,4 +391,219 @@ fn test_twap_config_validation() {
     assert_eq!(config.window_size, 1800); // unchanged
     assert_eq!(config.max_deviation, 2000); // unchanged
     assert_eq!(config.enabled, false);
+}
+
+#[test]
+fn test_fee_accumulator_initialization() {
+    let env = Env::default();
+    env.mock_all_auths();
+    
+    let admin = Address::generate(&env);
+    let token_a = Address::generate(&env);
+    let token_b = Address::generate(&env);
+    
+    TradeFlow::init(&env, admin.clone(), token_a, token_b, 30);
+    
+    // Check fee accumulator initialization
+    let accumulator = TradeFlow::get_fee_accumulator(&env);
+    assert_eq!(accumulator.token_a_fees, 0);
+    assert_eq!(accumulator.token_b_fees, 0);
+    assert!(accumulator.last_collection_time > 0);
+    assert_eq!(accumulator.total_fees_collected, 0);
+    assert_eq!(accumulator.total_tokens_burned, 0);
+}
+
+#[test]
+fn test_buyback_configuration() {
+    let env = Env::default();
+    env.mock_all_auths();
+    
+    let admin = Address::generate(&env);
+    let token_a = Address::generate(&env);
+    let token_b = Address::generate(&env);
+    let tf_token = Address::generate(&env);
+    let fee_recipient = Address::generate(&env);
+    
+    TradeFlow::init(&env, admin.clone(), token_a, token_b, 30);
+    
+    // Configure buyback
+    TradeFlow::configure_buyback(&env, tf_token.clone(), fee_recipient.clone(), 5000); // 50% burn
+    
+    let config = TradeFlow::get_buyback_config(&env).unwrap();
+    assert_eq!(config.tf_token_address, tf_token);
+    assert_eq!(config.fee_recipient, fee_recipient);
+    assert_eq!(config.burn_percentage, 5000);
+    assert!(config.buyback_enabled);
+}
+
+#[test]
+fn test_buyback_configuration_validation() {
+    let env = Env::default();
+    env.mock_all_auths();
+    
+    let admin = Address::generate(&env);
+    let token_a = Address::generate(&env);
+    let token_b = Address::generate(&env);
+    let tf_token = Address::generate(&env);
+    let fee_recipient = Address::generate(&env);
+    
+    TradeFlow::init(&env, admin.clone(), token_a, token_b, 30);
+    
+    // Test invalid burn percentage
+    let result = std::panic::catch_unwind(|| {
+        TradeFlow::configure_buyback(&env, tf_token, fee_recipient, 15000); // > 100%
+    });
+    
+    assert!(result.is_err(), "Should panic with invalid burn percentage");
+}
+
+#[test]
+fn test_fee_collection_from_swaps() {
+    let env = Env::default();
+    env.mock_all_auths();
+    
+    let admin = Address::generate(&env);
+    let token_a = Address::generate(&env);
+    let token_b = Address::generate(&env);
+    
+    TradeFlow::init(&env, admin.clone(), token_a.clone(), token_b.clone(), 30);
+    
+    // Add liquidity
+    let user = Address::generate(&env);
+    let token_a_client = token::Client::new(&env, &token_a);
+    let token_b_client = token::Client::new(&env, &token_b);
+    
+    token_a_client.mint(&user, &1000);
+    token_b_client.mint(&user, &2000);
+    
+    TradeFlow::provide_liquidity(&env, user.clone(), 100, 200, 1);
+    
+    // Perform a swap to generate fees
+    token_a_client.mint(&user, &10);
+    
+    // Mock the swap to see fee collection
+    let result = std::panic::catch_unwind(|| {
+        TradeFlow::swap(&env, user.clone(), token_a.clone(), 10, 1);
+    });
+    
+    // Check that fees were accumulated
+    let accumulator = TradeFlow::get_fee_accumulator(&env);
+    assert!(accumulator.total_fees_collected > 0, "Fees should be collected from swaps");
+}
+
+#[test]
+fn test_buyback_toggle() {
+    let env = Env::default();
+    env.mock_all_auths();
+    
+    let admin = Address::generate(&env);
+    let token_a = Address::generate(&env);
+    let token_b = Address::generate(&env);
+    let tf_token = Address::generate(&env);
+    let fee_recipient = Address::generate(&env);
+    
+    TradeFlow::init(&env, admin.clone(), token_a, token_b, 30);
+    TradeFlow::configure_buyback(&env, tf_token, fee_recipient, 5000);
+    
+    // Test toggling buyback off
+    TradeFlow::toggle_buyback(&env, false);
+    let config = TradeFlow::get_buyback_config(&env).unwrap();
+    assert!(!config.buyback_enabled);
+    
+    // Test toggling buyback on
+    TradeFlow::toggle_buyback(&env, true);
+    let config = TradeFlow::get_buyback_config(&env).unwrap();
+    assert!(config.buyback_enabled);
+}
+
+#[test]
+fn test_buyback_execution() {
+    let env = Env::default();
+    env.mock_all_auths();
+    
+    let admin = Address::generate(&env);
+    let token_a = Address::generate(&env);
+    let token_b = Address::generate(&env);
+    let tf_token = Address::generate(&env);
+    let fee_recipient = Address::generate(&env);
+    
+    TradeFlow::init(&env, admin.clone(), token_a.clone(), token_b.clone(), 30);
+    TradeFlow::configure_buyback(&env, tf_token.clone(), fee_recipient.clone(), 5000); // 50% burn
+    
+    // Simulate accumulated fees
+    let mut accumulator = TradeFlow::get_fee_accumulator(&env);
+    accumulator.token_a_fees = 1000; // Simulate 1000 fees collected
+    env.storage().instance().set(&DataKey::FeeAccumulator, &accumulator);
+    
+    // Execute buyback
+    let tf_received = TradeFlow::execute_buyback_and_burn(
+        &env,
+        token_a.clone(),
+        500, // Use 500 fees for buyback
+        400  // Expect at least 400 TF tokens
+    );
+    
+    assert!(tf_received >= 400, "Should receive at least minimum TF tokens");
+    
+    // Check that fees were deducted
+    let updated_accumulator = TradeFlow::get_fee_accumulator(&env);
+    assert_eq!(updated_accumulator.token_a_fees, 500); // 1000 - 500 used
+    assert!(updated_accumulator.total_tokens_burned > 0, "Tokens should be burned");
+}
+
+#[test]
+fn test_buyback_insufficient_fees() {
+    let env = Env::default();
+    env.mock_all_auths();
+    
+    let admin = Address::generate(&env);
+    let token_a = Address::generate(&env);
+    let token_b = Address::generate(&env);
+    let tf_token = Address::generate(&env);
+    let fee_recipient = Address::generate(&env);
+    
+    TradeFlow::init(&env, admin.clone(), token_a.clone(), token_b.clone(), 30);
+    TradeFlow::configure_buyback(&env, tf_token, fee_recipient, 5000);
+    
+    // Try to execute buyback with insufficient fees
+    let result = std::panic::catch_unwind(|| {
+        TradeFlow::execute_buyback_and_burn(
+            &env,
+            token_a,
+            1000, // Try to use 1000 fees
+            800   // Expect 800 TF tokens
+        );
+    });
+    
+    assert!(result.is_err(), "Should panic with insufficient fees");
+}
+
+#[test]
+fn test_buyback_disabled() {
+    let env = Env::default();
+    env.mock_all_auths();
+    
+    let admin = Address::generate(&env);
+    let token_a = Address::generate(&env);
+    let token_b = Address::generate(&env);
+    let tf_token = Address::generate(&env);
+    let fee_recipient = Address::generate(&env);
+    
+    TradeFlow::init(&env, admin.clone(), token_a.clone(), token_b.clone(), 30);
+    TradeFlow::configure_buyback(&env, tf_token, fee_recipient, 5000);
+    
+    // Disable buyback
+    TradeFlow::toggle_buyback(&env, false);
+    
+    // Try to execute buyback
+    let result = std::panic::catch_unwind(|| {
+        TradeFlow::execute_buyback_and_burn(
+            &env,
+            token_a,
+            100,
+            80
+        );
+    });
+    
+    assert!(result.is_err(), "Should panic when buyback is disabled");
 }
