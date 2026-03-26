@@ -1,6 +1,5 @@
 #![no_std]
-use soroban_sdk::{contract, contractimpl, contracttype, token, Address, Env, BytesN, Bytes, symbol_short, Symbol, vec, Val};
-use soroban_sdk::{contract, contracterror, contractimpl, contracttype, token, Address, Env, BytesN, symbol_short, panic_with_error};
+use soroban_sdk::{contract, contracterror, contractimpl, contracttype, token, Address, Env, BytesN, Bytes, symbol_short, Symbol, vec, Val, panic_with_error};
 
 #[cfg(test)]
 mod tests;
@@ -23,6 +22,9 @@ pub enum Error {
     CannotLiquidateHealthyLoan = 8,
     Unauthorized = 9,
     MathOverflow = 10,
+    PoolIsPaused = 11,
+    EmptyPool = 12,
+    TradeSizeTooLarge = 13,
 }
 
 #[contracttype]
@@ -56,6 +58,7 @@ pub enum DataKey {
     BackendPubkey, // Backend public key for signature verification
     WhitelistActive,
     Whitelisted(Address),
+    MaxTradePercentage,
 }
 
 #[contract]
@@ -153,8 +156,10 @@ impl LendingPool {
     }
 
     // 3. SWAP / BORROW: Withdraw/Borrow against an invoice (Simplified with max trade protection)
-    pub fn swap(env: Env, user: Address, amount_in: i128) -> Result<(), PoolError> {
-        Self::check_paused(&env);
+    pub fn swap(env: Env, user: Address, amount_in: i128) -> Result<(), Error> {
+        if env.storage().instance().get(&DataKey::Paused).unwrap_or(false) {
+            return Err(Error::PoolIsPaused);
+        }
         user.require_auth();
 
         // 1. Check total pool reserves
@@ -163,7 +168,7 @@ impl LendingPool {
         
         let total_reserves = client.balance(&env.current_contract_address());
         if total_reserves == 0 {
-            return Err(PoolError::EmptyPool);
+            return Err(Error::EmptyPool);
         }
 
         // 2. Compute max allowed trade size based on configurable percentage
@@ -175,11 +180,11 @@ impl LendingPool {
             // Reverts transaction with specific error type. 
             // Note: Soroban contracterror enums cannot carry payloads.
             // The frontend should catch TradeSizeTooLarge and display appropriate messages.
-            return Err(PoolError::TradeSizeTooLarge);
+            return Err(Error::TradeSizeTooLarge);
         }
 
         if amount_in > total_reserves {
-            return Err(PoolError::InsufficientLiquidity);
+            return Err(Error::InsufficientLiquidity);
         }
 
         // 4. Transfer funds Contract -> User
