@@ -16,6 +16,10 @@ pub struct PoolState {
     pub fee_tier: u32, // Fee tier in basis points (5, 30, or 100)
     pub is_deprecated: bool,
     pub _status: u32, // 0 = unlocked, 1 = locked (reentrancy protection)
+    // TWAP Oracle state variables
+    pub price_0_cumulative_last: u128, // Cumulative price for token_0
+    pub price_1_cumulative_last: u128, // Cumulative price for token_1
+    pub block_timestamp_last: u32,     // Last update timestamp
 }
 
 #[contracttype]
@@ -67,6 +71,10 @@ impl AmmPool {
             fee_tier,
             is_deprecated: false,
             _status: 0, // Start unlocked
+            // Initialize TWAP oracle state
+            price_0_cumulative_last: 0,
+            price_1_cumulative_last: 0,
+            block_timestamp_last: 0,
         };
 
         env.storage().instance().set(&DataKey::State, &state);
@@ -205,5 +213,98 @@ impl AmmPool {
         }
 
         output_native
+    }
+
+    /// Calculate the time elapsed since the last oracle update
+    /// 
+    /// # Returns
+    /// * `u32` - Time elapsed in seconds since last update
+    fn calculate_time_elapsed(env: &Env, last_timestamp: u32) -> u32 {
+        let current_timestamp = env.ledger().timestamp();
+        
+        // Handle edge case where current timestamp is less than last timestamp
+        if current_timestamp <= last_timestamp {
+            return 0;
+        }
+        
+        current_timestamp - last_timestamp
+    }
+
+    /// Update the TWAP oracle with current prices
+    /// 
+    /// This function should be called after any swap to update the cumulative price tracking.
+    /// It calculates the time elapsed since the last update and adds the price * time product
+    /// to the cumulative trackers.
+    /// 
+    /// # Arguments
+    /// * `env` - The Soroban environment
+    pub fn update_twap_oracle(env: Env) {
+        let mut state: PoolState = env.storage().instance().get(&DataKey::State).expect("Not initialized");
+        
+        // Skip update if pool is empty (no reserves)
+        if state.reserve_a <= 0 || state.reserve_b <= 0 {
+            return;
+        }
+        
+        // Calculate time elapsed since last update
+        let time_elapsed = Self::calculate_time_elapsed(&env, state.block_timestamp_last);
+        
+        // Skip update if no time has passed
+        if time_elapsed == 0 {
+            return;
+        }
+        
+        // Calculate current prices (scaled to maintain precision)
+        // Price = reserve_other / reserve_this
+        // We use u128 for cumulative prices to prevent overflow over time
+        
+        // Price of token_a in terms of token_b (reserve_b / reserve_a)
+        let price_a_scaled = if state.reserve_a > 0 {
+            // Scale price to maintain precision (multiply by 1e18)
+            (state.reserve_b as u128).saturating_mul(1_000_000_000_000_000_000) / (state.reserve_a as u128)
+        } else {
+            0
+        };
+        
+        // Price of token_b in terms of token_a (reserve_a / reserve_b)
+        let price_b_scaled = if state.reserve_b > 0 {
+            // Scale price to maintain precision (multiply by 1e18)
+            (state.reserve_a as u128).saturating_mul(1_000_000_000_000_000_000) / (state.reserve_b as u128)
+        } else {
+            0
+        };
+        
+        // Update cumulative prices: cumulative += price * time_elapsed
+        state.price_0_cumulative_last = state.price_0_cumulative_last.saturating_add(
+            price_a_scaled.saturating_mul(time_elapsed as u128)
+        );
+        state.price_1_cumulative_last = state.price_1_cumulative_last.saturating_add(
+            price_b_scaled.saturating_mul(time_elapsed as u128)
+        );
+        
+        // Update the last timestamp to current time
+        state.block_timestamp_last = env.ledger().timestamp();
+        
+        // Save the updated state
+        env.storage().instance().set(&DataKey::State, &state);
+        
+        // Emit debug event for monitoring
+        env.events().publish(
+            (symbol_short!("TWAP"), symbol_short!("Update")),
+            (time_elapsed, price_a_scaled, price_b_scaled)
+        );
+    }
+
+    /// Get the current TWAP oracle state
+    /// 
+    /// # Returns
+    /// * `(u128, u128, u32)` - (price_0_cumulative_last, price_1_cumulative_last, block_timestamp_last)
+    pub fn get_twap_oracle_state(env: Env) -> (u128, u128, u32) {
+        let state: PoolState = env.storage().instance().get(&DataKey::State).expect("Not initialized");
+        (
+            state.price_0_cumulative_last,
+            state.price_1_cumulative_last,
+            state.block_timestamp_last
+        )
     }
 }
