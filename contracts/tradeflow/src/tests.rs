@@ -552,6 +552,55 @@ fn test_buyback_execution() {
 }
 
 #[test]
+fn test_dead_man_switch_logic() {
+    let env = Env::default();
+    env.mock_all_auths();
+    
+    let admin = Address::generate(&env);
+    let backup = Address::generate(&env);
+    let token_a = Address::generate(&env);
+    let token_b = Address::generate(&env);
+    
+    TradeFlow::init(&env, admin.clone(), token_a, token_b, 30);
+    
+    let timeout = 3600; // 1 hour
+    
+    // Set Dead-Man's Switch
+    TradeFlow::set_dead_man_switch(&env, backup.clone(), timeout);
+    
+    let config = TradeFlow::get_dead_man_switch_config(&env).unwrap();
+    assert_eq!(config.backup_admin, backup);
+    assert_eq!(config.timeout, timeout);
+    let last_active = config.last_active_at;
+    
+    // Advance time by 30 mins
+    env.ledger().set_timestamp(env.ledger().timestamp() + 1800);
+    
+    // Claim should fail before timeout
+    let result = std::panic::catch_unwind(|| {
+        TradeFlow::claim_admin_role(&env);
+    });
+    assert!(result.is_err());
+    
+    // Admin activity resets timer
+    TradeFlow::admin_check_in(&env);
+    let config2 = TradeFlow::get_dead_man_switch_config(&env).unwrap();
+    assert!(config2.last_active_at > last_active);
+    
+    // Advance time by 1 hour + 1 sec
+    env.ledger().set_timestamp(env.ledger().timestamp() + 3601);
+    
+    // Now claim should succeed
+    TradeFlow::claim_admin_role(&env);
+    
+    // Verify admin role transferred
+    assert_eq!(TradeFlow::get_admin(&env), backup);
+    
+    // Dead-Man's Switch config should be removed
+    assert!(TradeFlow::get_dead_man_switch_config(&env).is_none());
+}
+
+#[test]
 fn test_buyback_insufficient_fees() {
     let env = Env::default();
     env.mock_all_auths();

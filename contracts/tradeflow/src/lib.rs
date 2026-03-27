@@ -63,6 +63,14 @@ pub struct FeeAccumulator {
 
 #[contracttype]
 #[derive(Clone, Debug)]
+pub struct DeadManSwitchConfig {
+    pub backup_admin: Address,
+    pub timeout: u64, // Timeout in seconds
+    pub last_active_at: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug)]
 pub struct PermitData {
     pub owner: Address,
     pub spender: Address,
@@ -89,6 +97,7 @@ pub enum DataKey {
     LastObservation, // Most recent price observation
     BuybackConfig,  // Buyback and burn configuration
     FeeAccumulator, // Fee accumulation tracking
+    DeadManSwitchConfig, // Dead-man's switch configuration
 }
 
 #[contract]
@@ -144,6 +153,15 @@ impl TradeFlow {
         let admin: Address = env.storage().instance().get(&DataKey::Admin)
             .expect("Not initialized");
         admin.require_auth();
+        Self::update_admin_activity(env);
+    }
+
+    // Helper function to update admin activity timestamp
+    fn update_admin_activity(env: &Env) {
+        if let Some(mut config) = env.storage().instance().get::<_, DeadManSwitchConfig>(&DataKey::DeadManSwitchConfig) {
+            config.last_active_at = env.ledger().timestamp();
+            env.storage().instance().set(&DataKey::DeadManSwitchConfig, &config);
+        }
     }
 
     // Helper function to get user nonce
@@ -354,6 +372,58 @@ impl TradeFlow {
                 max_deviation: 1000,
                 enabled: true,
             })
+    }
+
+    // SET DEAD MAN SWITCH: Configure the dead-man's switch (admin only)
+    pub fn set_dead_man_switch(env: Env, backup_admin: Address, timeout: u64) {
+        Self::require_admin(&env);
+        
+        let config = DeadManSwitchConfig {
+            backup_admin: backup_admin.clone(),
+            timeout,
+            last_active_at: env.ledger().timestamp(),
+        };
+        
+        env.storage().instance().set(&DataKey::DeadManSwitchConfig, &config);
+        
+        env.events().publish(
+            (Symbol::new(&env, "dead_man_switch_configured"), backup_admin),
+            timeout
+        );
+    }
+    
+    // ADMIN CHECK IN: Explicitly update admin activity timestamp
+    pub fn admin_check_in(env: Env) {
+        Self::require_admin(&env); // This will call update_admin_activity
+    }
+    
+    // CLAIM ADMIN ROLE: Transfer admin role to backup if timeout reached
+    pub fn claim_admin_role(env: Env) {
+        let config: DeadManSwitchConfig = env.storage().instance().get(&DataKey::DeadManSwitchConfig)
+            .expect("Dead-man's switch not configured");
+        
+        config.backup_admin.require_auth();
+        
+        let current_timestamp = env.ledger().timestamp();
+        if current_timestamp < config.last_active_at.checked_add(config.timeout).expect("Overflow") {
+            panic!("Dead-man's switch timeout not yet reached");
+        }
+        
+        // Transfer admin role
+        env.storage().instance().set(&DataKey::Admin, &config.backup_admin);
+        
+        // Remove the dead-man's switch config after claim
+        env.storage().instance().remove(&DataKey::DeadManSwitchConfig);
+        
+        env.events().publish(
+            (Symbol::new(&env, "admin_role_claimed"), config.backup_admin),
+            current_timestamp
+        );
+    }
+    
+    // GET DEAD MAN SWITCH CONFIG: Get current configuration
+    pub fn get_dead_man_switch_config(env: Env) -> Option<DeadManSwitchConfig> {
+        env.storage().instance().get(&DataKey::DeadManSwitchConfig)
     }
 
     // PROPOSE FEE CHANGE: Propose a new protocol fee with 48-hour timelock
@@ -689,6 +759,12 @@ impl TradeFlow {
         let reserve_b: u128 = env.storage().instance().get(&DataKey::ReserveB)
             .unwrap_or(0u128);
         (reserve_a, reserve_b)
+    }
+
+    // GET ADMIN: Get current admin address
+    pub fn get_admin(env: Env) -> Address {
+        env.storage().instance().get(&DataKey::Admin)
+            .expect("Not initialized")
     }
 
     // GET USER LIQUIDITY POSITION: Get user's liquidity position
