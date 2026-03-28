@@ -7,8 +7,11 @@ import SyncStatus from '@/components/PWA/SyncStatus';
 import { useServiceWorker } from '@/hooks/useServiceWorker';
 import { useOfflineSync } from '@/hooks/useOfflineSync';
 
+import TokenSearchModal from '@/components/TokenSearchModal';
+
 export default function HomePage() {
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+  const [isTokenModalOpen, setIsTokenModalOpen] = useState(false);
   const { isReady, updateAvailable, applyUpdate } = useServiceWorker();
   const { isOnline, pendingItems } = useOfflineSync();
 
@@ -155,8 +158,16 @@ export default function HomePage() {
               >
                 View Proofs
               </a>
+              <button
+                onClick={() => setIsTokenModalOpen(true)}
+                className="btn btn-primary text-lg px-6 py-3"
+              >
+                Import Token
+              </button>
             </div>
           </section>
+
+          {isTokenModalOpen && <TokenSearchModal />}
 
           {/* Features Grid */}
           <section className="py-12">
