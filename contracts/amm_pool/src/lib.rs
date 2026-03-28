@@ -81,9 +81,13 @@ impl AmmPool {
         env.storage().instance().set(&DataKey::Admin, &admin);
     }
 
-    /// Provide liquidity (simplified for testing AMM calculations)
-    pub fn provide_liquidity(env: Env, amount_a: i128, amount_b: i128) {
+    /// Provide liquidity after verifying the user holds sufficient balance and allowance
+    /// for both tokens. Call-sites 1 and 2 for verify_balance_and_allowance.
+    pub fn provide_liquidity(env: Env, user: Address, amount_a: i128, amount_b: i128) {
+        user.require_auth();
         let mut state: PoolState = env.storage().instance().get(&DataKey::State).expect("Not initialized");
+        Self::verify_balance_and_allowance(&env, &state.token_a, &user, amount_a);
+        Self::verify_balance_and_allowance(&env, &state.token_b, &user, amount_b);
         state.reserve_a = state.reserve_a.saturating_add(amount_a);
         state.reserve_b = state.reserve_b.saturating_add(amount_b);
         env.storage().instance().set(&DataKey::State, &state);
@@ -93,6 +97,24 @@ impl AmmPool {
     fn require_admin(env: &Env) {
         let admin: Address = env.storage().instance().get(&DataKey::Admin).expect("Not initialized");
         admin.require_auth();
+    }
+
+    /// Verify that `user` holds at least `required_amount` of `token` and has granted
+    /// at least that much allowance to this contract. Panics early with a descriptive
+    /// message if either check fails. No-ops when `required_amount <= 0`.
+    fn verify_balance_and_allowance(env: &Env, token: &Address, user: &Address, required_amount: i128) {
+        if required_amount <= 0 {
+            return;
+        }
+        let client = token::Client::new(env, token);
+        let balance = client.balance(user);
+        if balance < required_amount {
+            panic!("insufficient balance");
+        }
+        let allowance = client.allowance(user, &env.current_contract_address());
+        if allowance < required_amount {
+            panic!("insufficient allowance");
+        }
     }
 
     /// Emergency eject liquidity - Admin only function to forcefully withdraw all liquidity
@@ -215,9 +237,18 @@ impl AmmPool {
         output_native
     }
 
-    /// Read the current pool reserve ratio (reserve_a / reserve_b) scaled by 10^7.
-    pub fn get_spot_price(env: Env) -> u128 {
+    /// Swap tokens: verify user balance/allowance for the input token (call-site 3),
+    /// then calculate and return the output amount using the constant-product formula.
+    /// Does not perform actual token transfers (out of scope for this feature).
+    pub fn swap(env: Env, user: Address, amount_in: i128, is_a_in: bool) -> i128 {
         let state: PoolState = env.storage().instance().get(&DataKey::State).expect("Not initialized");
+        let input_token = if is_a_in { &state.token_a } else { &state.token_b };
+        Self::verify_balance_and_allowance(&env, input_token, &user, amount_in);
+        Self::calculate_amount_out(env, amount_in, is_a_in)
+    }
+
+    /// Read the current pool reserve ratio (reserve_a / reserve_b) scaled by 10^7.
+    pub fn get_spot_price(env: Env) -> u128 {        let state: PoolState = env.storage().instance().get(&DataKey::State).expect("Not initialized");
         
         if state.reserve_b == 0 {
             panic!("reserve_b is zero");
