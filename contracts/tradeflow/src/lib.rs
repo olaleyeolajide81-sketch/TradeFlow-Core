@@ -120,6 +120,7 @@ pub enum DataKey {
     BuybackConfig,  // Buyback and burn configuration
     FeeAccumulator, // Fee accumulation tracking
     DeadManSwitchConfig, // Dead-man's switch configuration
+    ReentrancyStatus,    // Reentrancy protection status
 }
 
 #[contract]
@@ -172,6 +173,9 @@ impl TradeFlow {
             upgrade_count: 0,
         };
         env.storage().instance().set(&DataKey::UpgradeConfig, &upgrade_config);
+        
+        // Initialize reentrancy status to 1 (NOT_ENTERED) (#108)
+        env.storage().instance().set(&DataKey::ReentrancyStatus, &1u32);
         
         env.events().publish(
             (Symbol::new(&env, "initialized"), admin),
@@ -578,6 +582,13 @@ impl TradeFlow {
         token_b_amount: u128,
         min_shares: u128
     ) -> u128 {
+        // Reentrancy protection (#108)
+        let status: u32 = env.storage().instance().get(&DataKey::ReentrancyStatus).unwrap_or(1);
+        if status != 1 {
+            panic!("Reentrancy violation: already entered");
+        }
+        env.storage().instance().set(&DataKey::ReentrancyStatus, &2u32);
+
         // Granular authentication - user signs exact amounts
         let mut args = Vec::new(&env);
         args.push_back(token_a_amount.into_val(&env));
@@ -671,6 +682,9 @@ impl TradeFlow {
 
         env.storage().instance().set(&DataKey::LiquidityPosition(user.clone()), &position);
 
+        // Reset reentrancy status (#108)
+        env.storage().instance().set(&DataKey::ReentrancyStatus, &1u32);
+
         env.events().publish(
             (Symbol::new(&env, "liquidity_provided"), user.clone()),
             (token_a_amount, token_b_amount, shares)
@@ -687,6 +701,13 @@ impl TradeFlow {
         amount_in: u128,
         amount_out_min: u128
     ) -> u128 {
+        // Reentrancy protection (#108)
+        let status: u32 = env.storage().instance().get(&DataKey::ReentrancyStatus).unwrap_or(1);
+        if status != 1 {
+            panic!("Reentrancy violation: already entered");
+        }
+        env.storage().instance().set(&DataKey::ReentrancyStatus, &2u32);
+
         // Granular authentication - user signs exact amount_out_min
         let mut args = Vec::new(&env);
         args.push_back(token_in.into_val(&env));
@@ -807,6 +828,9 @@ impl TradeFlow {
             (Symbol::new(&env, "swap"), user),
             (token_in, amount_in, token_out_addr, amount_out, protocol_fee_amount)
         );
+
+        // Reset reentrancy status (#108)
+        env.storage().instance().set(&DataKey::ReentrancyStatus, &1u32);
 
         amount_out
     }
@@ -1237,6 +1261,19 @@ impl TradeFlow {
         env.events().publish(
             (Symbol::new(&env, "emergency_upgrade"), new_wasm_hash),
             (old_wasm_hash, current_time, reason)
+        );
+    }
+
+    // EMERGENCY WITHDRAW: Securely withdraw specified token balance in case of emergency (admin only) (#48)
+    pub fn emergency_withdraw(env: Env, token_address: Address, recovery_wallet: Address, amount: u128) {
+        Self::require_admin(&env);
+
+        let token_client = token::Client::new(&env, &token_address);
+        token_client.transfer(&env.current_contract_address(), &recovery_wallet, &(amount as i128));
+
+        env.events().publish(
+            (Symbol::new(&env, "EmergencyAction"), token_address),
+            (recovery_wallet, amount)
         );
     }
 }

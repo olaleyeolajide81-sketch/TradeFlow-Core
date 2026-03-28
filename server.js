@@ -3,6 +3,11 @@ const express = require('express');
 require('dotenv').config();
 
 const app = express();
+
+// Startup validation for required .env variables (#25)
+if (!process.env.PORT) {
+    console.warn('Warning: PORT is not defined in .env file. Falling back to default port 3000.');
+}
 const port = process.env.PORT || 3000;
 
 // Security and middleware

@@ -24,6 +24,21 @@ The Factory contract supports creating pools with different fee tiers to optimiz
 | **Stable** | 5 | 0.05% | Stablecoin pairs (USDC/USDT, DAI/USDC) |
 | **Standard** | 30 | 0.30% | Standard token pairs (ETH/USDC, BTC/USDC) |
 | **Volatile** | 100 | 1.00% | Highly volatile exotic pairs |
+| **Recovery** | - | - | Emergency admin withdrawal enabled |
+
+## 🔗 Deterministic Address Derivation (#104)
+
+TradeFlow uses Soroban's `deployer().with_current_contract(salt)` for deterministic pool address derivation. This allows off-chain tools to calculate the pool address without querying the Factory.
+
+The `salt` is derived using SHA-256 hashing of the XDR-encoded token addresses:
+1. Sort `token_a` and `token_b` lexicographically.
+2. Hashing algorithm: `sha256(token_0_xdr + token_1_xdr)`.
+3. Deployment: `env.deployer().with_current_contract(salt).deploy(wasm_hash)`.
+
+### Local Pool Address Calculation
+External developers can calculate the pool address locally using the token addresses and the factory's contract ID.
+
+---
 
 ### Creating a Pool with Specific Fee Tier
 
