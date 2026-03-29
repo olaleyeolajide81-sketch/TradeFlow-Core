@@ -16,6 +16,8 @@ pub struct PoolState {
     pub fee_tier: u32, // Fee tier in basis points (5, 30, or 100)
     pub is_deprecated: bool,
     pub _status: u32, // 0 = unlocked, 1 = locked (reentrancy protection)
+    pub deposits_paused: bool,    // When true, new deposits and swaps are blocked
+    pub withdrawals_paused: bool, // When true, liquidity removals are blocked
     // TWAP Oracle state variables
     pub price_0_cumulative_last: u128, // Cumulative price for token_0
     pub price_1_cumulative_last: u128, // Cumulative price for token_1
@@ -71,6 +73,8 @@ impl AmmPool {
             fee_tier,
             is_deprecated: false,
             _status: 0, // Start unlocked
+            deposits_paused: false,
+            withdrawals_paused: false,
             // Initialize TWAP oracle state
             price_0_cumulative_last: 0,
             price_1_cumulative_last: 0,
@@ -86,6 +90,9 @@ impl AmmPool {
     pub fn provide_liquidity(env: Env, user: Address, amount_a: i128, amount_b: i128) {
         user.require_auth();
         let mut state: PoolState = env.storage().instance().get(&DataKey::State).expect("Not initialized");
+        if state.deposits_paused {
+            panic!("deposits are paused");
+        }
         Self::verify_balance_and_allowance(&env, &state.token_a, &user, amount_a);
         Self::verify_balance_and_allowance(&env, &state.token_b, &user, amount_b);
         state.reserve_a = state.reserve_a.saturating_add(amount_a);
@@ -97,6 +104,26 @@ impl AmmPool {
     fn require_admin(env: &Env) {
         let admin: Address = env.storage().instance().get(&DataKey::Admin).expect("Not initialized");
         admin.require_auth();
+    }
+
+    /// Admin: pause or unpause new deposits and swaps into the pool.
+    /// When paused, provide_liquidity and swap will reject all calls,
+    /// but existing LPs can still withdraw via remove_liquidity.
+    pub fn set_deposits_paused(env: Env, paused: bool) {
+        Self::require_admin(&env);
+        let mut state: PoolState = env.storage().instance().get(&DataKey::State).expect("Not initialized");
+        state.deposits_paused = paused;
+        env.storage().instance().set(&DataKey::State, &state);
+    }
+
+    /// Admin: pause or unpause liquidity withdrawals from the pool.
+    /// When paused, remove_liquidity will reject all calls,
+    /// but new deposits can still enter via provide_liquidity.
+    pub fn set_withdrawals_paused(env: Env, paused: bool) {
+        Self::require_admin(&env);
+        let mut state: PoolState = env.storage().instance().get(&DataKey::State).expect("Not initialized");
+        state.withdrawals_paused = paused;
+        env.storage().instance().set(&DataKey::State, &state);
     }
 
     /// Verify that `user` holds at least `required_amount` of `token` and has granted
@@ -242,9 +269,33 @@ impl AmmPool {
     /// Does not perform actual token transfers (out of scope for this feature).
     pub fn swap(env: Env, user: Address, amount_in: i128, is_a_in: bool) -> i128 {
         let state: PoolState = env.storage().instance().get(&DataKey::State).expect("Not initialized");
+        if state.deposits_paused {
+            panic!("deposits are paused");
+        }
         let input_token = if is_a_in { &state.token_a } else { &state.token_b };
         Self::verify_balance_and_allowance(&env, input_token, &user, amount_in);
         Self::calculate_amount_out(env, amount_in, is_a_in)
+    }
+
+    /// Remove liquidity from the pool, returning underlying tokens to the user.
+    /// Withdrawals are permitted even when deposits are paused, allowing LPs to
+    /// rescue funds during an emergency. Only a separate withdrawals_paused flag
+    /// (set by admin) can block this function.
+    pub fn remove_liquidity(env: Env, user: Address, amount_a: i128, amount_b: i128) {
+        user.require_auth();
+        let mut state: PoolState = env.storage().instance().get(&DataKey::State).expect("Not initialized");
+        if state.withdrawals_paused {
+            panic!("withdrawals are paused");
+        }
+        if amount_a < 0 || amount_b < 0 {
+            panic!("amounts must be non-negative");
+        }
+        if state.reserve_a < amount_a || state.reserve_b < amount_b {
+            panic!("insufficient reserves");
+        }
+        state.reserve_a -= amount_a;
+        state.reserve_b -= amount_b;
+        env.storage().instance().set(&DataKey::State, &state);
     }
 
     /// Read the current pool reserve ratio (reserve_a / reserve_b) scaled by 10^7.
