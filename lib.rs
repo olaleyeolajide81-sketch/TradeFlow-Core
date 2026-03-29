@@ -65,6 +65,26 @@ impl FactoryContract {
         pools.get(sorted_tokens).map(|p| p.address)
     }
 
+    /// Checks if a liquidity pool exists for a given pair of tokens.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    /// * `token_a` - The first token address.
+    /// * `token_b` - The second token address.
+    ///
+    /// # Returns
+    /// `true` if a pool exists for the token pair, `false` otherwise.
+    ///
+    /// # Note
+    /// Token order doesn't matter - `pair_exists(A, B)` returns the same result as `pair_exists(B, A)`.
+    pub fn pair_exists(env: Env, token_a: Address, token_b: Address) -> bool {
+        let sorted_tokens = Self::sort_tokens(token_a, token_b);
+        let pools: Map<(Address, Address), Pool> =
+            env.storage().instance().get(&DataKey::Pools).unwrap_or_else(|| Map::new(&env));
+
+        pools.contains_key(sorted_tokens)
+    }
+
     /// Deploys a new liquidity pool for the given token pair with a specific fee tier.
     ///
     /// # Arguments

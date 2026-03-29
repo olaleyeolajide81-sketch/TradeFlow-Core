@@ -46,3 +46,56 @@ fn test_admin_actions() {
     let new_fee_to = Address::generate(&env);
     client.set_fee_recipient(&new_fee_to);
 }
+
+#[test]
+fn test_pair_exists_returns_false_for_nonexistent_pair() {
+    let env = Env::default();
+    let factory_id = env.register_contract(None, FactoryContract);
+    let client = FactoryContractClient::new(&env, &factory_id);
+
+    let admin = Address::generate(&env);
+    let fee_to = Address::generate(&env);
+    let wasm_hash = BytesN::from_array(&env, &[0; 32]);
+
+    client.initialize_factory(&admin, &fee_to, &wasm_hash);
+
+    // Create random token addresses
+    let token_a = Address::generate(&env);
+    let token_b = Address::generate(&env);
+
+    // Pool doesn't exist, so pair_exists should return false
+    assert_eq!(client.pair_exists(&token_a, &token_b), false);
+}
+
+#[test]
+fn test_pair_exists_returns_false_for_reversed_tokens() {
+    let env = Env::default();
+    let factory_id = env.register_contract(None, FactoryContract);
+    let client = FactoryContractClient::new(&env, &factory_id);
+
+    let admin = Address::generate(&env);
+    let fee_to = Address::generate(&env);
+    let wasm_hash = BytesN::from_array(&env, &[0; 32]);
+
+    client.initialize_factory(&admin, &fee_to, &wasm_hash);
+
+    let token_a = Address::generate(&env);
+    let token_b = Address::generate(&env);
+
+    // Check both orderings - should both return false for non-existent pair
+    assert_eq!(client.pair_exists(&token_a, &token_b), false);
+    assert_eq!(client.pair_exists(&token_b, &token_a), false);
+}
+
+#[test]
+fn test_pair_exists_on_uninitialized_factory() {
+    let env = Env::default();
+    let factory_id = env.register_contract(None, FactoryContract);
+    let client = FactoryContractClient::new(&env, &factory_id);
+
+    let token_a = Address::generate(&env);
+    let token_b = Address::generate(&env);
+
+    // Factory not initialized - should return false (empty map)
+    assert_eq!(client.pair_exists(&token_a, &token_b), false);
+}
