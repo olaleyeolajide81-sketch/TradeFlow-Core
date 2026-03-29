@@ -7,6 +7,10 @@ use soroban_sdk::{
 mod utils;
 use utils::fixed_point::{self, Q64};
 
+mod error;
+use error::{Error, check_and_panic_error};
+
+#[cfg(test)]
 mod tests;
 
 const MINIMUM_LIQUIDITY: u128 = 1000;
@@ -146,6 +150,9 @@ impl TradeFlow {
         env.storage().instance().set(&DataKey::ReserveA, &0u128);
         env.storage().instance().set(&DataKey::ReserveB, &0u128);
         env.storage().instance().set(&DataKey::Nonce, &0u64);
+        env.storage().instance().set(&DataKey::MaxTradePercentage, &10u32); // Default 10%
+        env.storage().instance().set(&DataKey::FeeRecipient, &admin); // Default to admin
+        env.storage().instance().set(&DataKey::FlashLoanActive, &false);
         
         // Initialize TWAP configuration with defaults
         let twap_config = TWAPConfig {
@@ -196,6 +203,16 @@ impl TradeFlow {
         if let Some(mut config) = env.storage().instance().get::<_, DeadManSwitchConfig>(&DataKey::DeadManSwitchConfig) {
             config.last_active_at = env.ledger().timestamp();
             env.storage().instance().set(&DataKey::DeadManSwitchConfig, &config);
+        }
+    }
+
+    // Helper function to check token allowance
+    fn check_allowance(env: &Env, user: &Address, token: &Address, spender: &Address, amount: u128) {
+        let token_client = token::Client::new(env, token);
+        let allowance = token_client.allowance(user, spender);
+        
+        if allowance < amount as i128 {
+            check_and_panic_error(Error::InsufficientAllowance);
         }
     }
 
@@ -513,11 +530,57 @@ impl TradeFlow {
         env.storage().instance().get(&DataKey::PendingFeeChange)
     }
 
+    // UPDATE MAX TRADE SIZE: Admin function to update maximum trade percentage
+    pub fn update_max_trade_size(env: Env, new_percentage: u32) {
+        Self::require_admin(&env);
+        
+        if new_percentage > 50 {
+            check_and_panic_error(Error::TradeSizeExceedsMaximum);
+        }
+
+        let old_percentage: u32 = env.storage().instance().get(&DataKey::MaxTradePercentage)
+            .unwrap_or(10u32);
+        
+        env.storage().instance().set(&DataKey::MaxTradePercentage, &new_percentage);
+
+        env.events().publish(
+            (Symbol::new(&env, "max_trade_size_updated"), old_percentage),
+            new_percentage
+        );
+    }
+
+    // UPDATE FEE RECIPIENT: Admin function to update protocol fee recipient
+    pub fn update_fee_recipient(env: Env, new_recipient: Address) {
+        Self::require_admin(&env);
+
+        let old_recipient: Address = env.storage().instance().get(&DataKey::FeeRecipient)
+            .expect("Not initialized");
+        
+        env.storage().instance().set(&DataKey::FeeRecipient, &new_recipient);
+
+        env.events().publish(
+            (Symbol::new(&env, "fee_recipient_changed"), old_recipient),
+            new_recipient
+        );
+    }
+
+    // GET MAX TRADE SIZE: Get current maximum trade percentage
+    pub fn get_max_trade_size(env: Env) -> u32 {
+        env.storage().instance().get(&DataKey::MaxTradePercentage)
+            .unwrap_or(10u32) // Default 10%
+    }
+
+    // GET FEE RECIPIENT: Get current fee recipient address
+    pub fn get_fee_recipient(env: Env) -> Address {
+        env.storage().instance().get(&DataKey::FeeRecipient)
+            .expect("Not initialized")
+    }
+
     // VERIFY PERMIT SIGNATURE: Verify EIP-2612 style permit signature
     fn verify_permit_signature(
         env: &Env,
         permit_data: &PermitData,
-        signature: &BytesN<64>
+        _signature: &BytesN<64>
     ) -> bool {
         // For now, we'll implement a simplified version
         // In a real implementation, you'd need to convert the Address to BytesN<32>
@@ -603,6 +666,11 @@ impl TradeFlow {
 
         let token_a_client = token::Client::new(&env, &token_a);
         let token_b_client = token::Client::new(&env, &token_b);
+
+        // Check token allowances before attempting transfers
+        let contract_address = env.current_contract_address();
+        Self::check_allowance(&env, &user, &token_a, &contract_address, token_a_amount);
+        Self::check_allowance(&env, &user, &token_b, &contract_address, token_b_amount);
 
         // Transfer tokens from user to contract
         token_a_client.transfer(&user, &env.current_contract_address(), &(token_a_amount as i128));
@@ -735,6 +803,20 @@ impl TradeFlow {
         let protocol_fee: u32 = env.storage().instance().get(&DataKey::ProtocolFee)
             .unwrap_or(30); // Default 0.3%
 
+        // Check trade size against maximum allowed percentage
+        let max_trade_percentage: u32 = env.storage().instance().get(&DataKey::MaxTradePercentage)
+            .unwrap_or(10u32); // Default 10%
+        
+        let (_reserve_for_token, max_allowed) = if token_in == token_a {
+            (reserve_a, (reserve_a * max_trade_percentage as u128) / 100u128)
+        } else {
+            (reserve_b, (reserve_b * max_trade_percentage as u128) / 100u128)
+        };
+
+        if amount_in > max_allowed {
+            check_and_panic_error(Error::TradeSizeExceedsMaximum);
+        }
+
         // Determine swap direction and calculate output
         let (amount_out, new_reserve_a, new_reserve_b, protocol_fee_amount) = if token_in == token_a {
             if reserve_a == 0 {
@@ -796,6 +878,10 @@ impl TradeFlow {
         let token_in_client = token::Client::new(&env, &token_in);
         let token_out_addr = if token_in == token_a { token_b } else { token_a };
         let token_out_client = token::Client::new(&env, &token_out_addr);
+
+        // Check token allowance before attempting transfer
+        let contract_address = env.current_contract_address();
+        Self::check_allowance(&env, &user, &token_in, &contract_address, amount_in);
 
         // Transfer input token from user to contract
         token_in_client.transfer(&user, &env.current_contract_address(), &(amount_in as i128));
