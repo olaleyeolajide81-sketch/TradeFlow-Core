@@ -633,8 +633,8 @@ impl TradeFlow {
         // Increment nonce to prevent replay attacks
         Self::increment_user_nonce(&env, &user);
 
-        // Execute the swap with granular auth for amount_out_min
-        Self::execute_swap(env, user, token_in, amount_in, amount_out_min);
+        // Execute the swap with granular auth for amount_out_min (emit event = true)
+        Self::execute_swap(env, user, token_in, amount_in, amount_out_min, true);
     }
 
     // PROVIDE LIQUIDITY: Add liquidity to the pool with granular auth
@@ -783,16 +783,18 @@ impl TradeFlow {
         args.push_back(amount_out_min.into_val(&env));
         user.require_auth_for_args(args);
 
-        Self::execute_swap(env, user, token_in, amount_in, amount_out_min)
+        // Execute the swap through the internal logic (emit event = true)
+        Self::execute_swap(env, user, token_in, amount_in, amount_out_min, true)
     }
 
     // EXECUTE SWAP: Internal swap execution logic
     fn execute_swap(
-        env: Env,
-        user: Address,
-        token_in: Address,
-        amount_in: u128,
-        amount_out_min: u128
+        env: Env, 
+        user: Address, 
+        token_in: Address, 
+        amount_in: u128, 
+        amount_out_min: u128,
+        emit_event: bool
     ) -> u128 {
         let token_a: Address = env.storage().instance().get(&DataKey::TokenA)
             .expect("Not initialized");
@@ -910,15 +912,87 @@ impl TradeFlow {
         // Update price observation after successful swap
         Self::update_price_observation(&env);
 
-        env.events().publish(
-            (Symbol::new(&env, "swap"), user),
-            (token_in, amount_in, token_out_addr, amount_out, protocol_fee_amount)
-        );
+        if emit_event {
+            env.events().publish(
+                (Symbol::new(&env, "swap"), user),
+                (token_in, amount_in, token_out_addr, amount_out, protocol_fee_amount)
+            );
+        }
 
         // Reset reentrancy status (#108)
         env.storage().instance().set(&DataKey::ReentrancyStatus, &1u32);
 
         amount_out
+    }
+
+    /// Execute a multi-hop swap across multiple token pairs
+    /// Track initial amount_in and final amount_out to emit a single MultiHopSwap event
+    pub fn swap_exact_tokens_for_tokens(
+        env: Env,
+        user: Address,
+        amount_in: u128,
+        amount_out_min: u128,
+        path: Vec<Address>,
+        to: Address,
+        deadline: u64
+    ) -> u128 {
+        user.require_auth();
+
+        // Basic deadline check
+        if env.ledger().timestamp() > deadline {
+            panic!("Deadline elapsed");
+        }
+
+        if path.len() < 2 {
+            panic!("Invalid path length");
+        }
+
+        let initial_amount_in = amount_in;
+        let mut current_amount = amount_in;
+
+        // Routing loop: execute each hop sequentially
+        for i in 0..path.len() - 1 {
+            let token_in = path.get(i).unwrap();
+            let token_out = path.get(i + 1).unwrap();
+
+            // Find current contract's tokens to decide if we call self or another pool
+            let current_token_a: Address = env.storage().instance().get(&DataKey::TokenA).unwrap();
+            let current_token_b: Address = env.storage().instance().get(&DataKey::TokenB).unwrap();
+
+            if (token_in == current_token_a && token_out == current_token_b) || 
+               (token_in == current_token_b && token_out == current_token_a) {
+                // This hop is handled by the current pool instance
+                // We call execute_swap with emit_event = false to avoid multiple events
+                current_amount = Self::execute_swap(env.clone(), user.clone(), token_in, current_amount, 0, false);
+            } else {
+                // For other hops, we would interact with external pools
+                // In this implementation, we focus on the event aggregation logic
+                // and assume external pools would be orchestrated by a higher-level router.
+                // However, following the requirements, we'll continue the loop tracking amounts.
+                
+                // If this contract is acting as a router, it would find and call external pools here:
+                // let pool_address = factory_client.get_pool(&token_in, &token_out);
+                // current_amount = env.invoke_contract(&pool_address, &Symbol::new(&env, "swap"), ...);
+                
+                // For the purpose of satisfyng requirement #90 in this specific contract context:
+                panic!("Multihop path through external pools not yet supported in this instance");
+            }
+        }
+
+        if current_amount < amount_out_min {
+            panic!("Insufficient output amount");
+        }
+
+        // Final protocol fee amount (aggregated or from last hop) - for the event
+        // In a real router, you'd track total fees, but requirement #90 focuses on in/out
+        
+        // Emit the single aggregated MultiHopSwap event as requested
+        env.events().publish(
+            (Symbol::new(&env, "MultiHopSwap"), user.clone()),
+            (path, initial_amount_in, current_amount, to)
+        );
+
+        current_amount
     }
 
     // GET RESERVES: Get current token reserves

@@ -198,6 +198,56 @@ fn test_permit_swap() {
 }
 
 #[test]
+fn test_swap_exact_tokens_for_tokens_events() {
+    let env = Env::default();
+    env.mock_all_auths();
+    
+    let admin = Address::generate(&env);
+    let user = Address::generate(&env);
+    let token_a = Address::generate(&env);
+    let token_b = Address::generate(&env);
+    
+    TradeFlow::init(&env, admin, token_a.clone(), token_b.clone(), 30);
+    
+    // Provide liquidity first
+    TradeFlow::provide_liquidity(&env, user.clone(), 1000, 1000, 1);
+    
+    // Execute swap_exact_tokens_for_tokens (single hop for simplicity in this instance test)
+    let path = vec![&env, token_a.clone(), token_b.clone()];
+    let deadline = env.ledger().timestamp() + 3600;
+    
+    TradeFlow::swap_exact_tokens_for_tokens(
+        &env,
+        user.clone(),
+        100,
+        1,
+        path.clone(),
+        user.clone(),
+        deadline
+    );
+    
+    // Get all events
+    let events = env.events().all();
+    
+    // Check if exactly one MultiHopSwap event was emitted
+    // and zero standard 'swap' events were emitted (suppressed)
+    let mut multihop_count = 0;
+    let mut swap_count = 0;
+    
+    for event in events.iter() {
+        if event.topics.get(0).unwrap() == Symbol::new(&env, "MultiHopSwap").into_val(&env) {
+            multihop_count += 1;
+        }
+        if event.topics.get(0).unwrap() == Symbol::new(&env, "swap").into_val(&env) {
+            swap_count += 1;
+        }
+    }
+    
+    assert_eq!(multihop_count, 1, "Exactly one MultiHopSwap event should be emitted");
+    assert_eq!(swap_count, 0, "Individual swap events should be suppressed");
+}
+
+#[test]
 fn test_fixed_point_math() {
     let env = Env::default();
     
