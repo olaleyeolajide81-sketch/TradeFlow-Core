@@ -123,8 +123,8 @@ impl FactoryContract {
         // Generate a deterministic salt based on the token pair
         // salt = sha256(token_0 + token_1)
         let mut salt_data = Bytes::new(&env);
-        salt_data.append(&token_0.to_xdr(&env));
-        salt_data.append(&token_1.to_xdr(&env));
+        salt_data.append(&token_0.clone().to_xdr(&env));
+        salt_data.append(&token_1.clone().to_xdr(&env));
         let salt = env.crypto().sha256(&salt_data);
 
         // Deploy the new pool contract

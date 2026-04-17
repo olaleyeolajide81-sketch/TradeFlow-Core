@@ -287,7 +287,7 @@ impl LendingPool {
         env.storage().instance().set(&DataKey::LoanId, &loan_id);
         Self::extend_instance_ttl(&env);
 
-        env.events().publish((symbol_short!("loan_create"), borrower), loan_id);
+        env.events().publish((Symbol::new(&env, "loan_create"), borrower), loan_id);
         loan_id
     }
 
@@ -337,7 +337,7 @@ impl LendingPool {
 
         // In a real implementation, we would transfer the NFT back to the borrower
         // For now, we just emit an event
-        env.events().publish((symbol_short!("loan_repaid"), loan.borrower), loan_id);
+        env.events().publish((Symbol::new(&env, "loan_repaid"), loan.borrower), loan_id);
     }
 
     // LIQUIDATE: Liquidate a defaulted loan
@@ -376,7 +376,7 @@ impl LendingPool {
         Self::extend_instance_ttl(&env);
 
         // In a real implementation, we would transfer the NFT to the liquidator
-        env.events().publish((symbol_short!("loan_liquid"), liquidator), loan_id);
+        env.events().publish((Symbol::new(&env, "loan_liquid"), liquidator), loan_id);
     }
 
     // GET LOAN: Retrieve loan details
@@ -462,7 +462,7 @@ impl LendingPool {
             panic_with_error!(&env, Error::InsufficientBalance);
         }
 
-        env.events().publish((symbol_short!("flash_loan"), receiver), (amount, fee));
+        env.events().publish((Symbol::new(&env, "flash_loan"), receiver), (amount, fee));
         Self::extend_instance_ttl(&env);
     }
 }
