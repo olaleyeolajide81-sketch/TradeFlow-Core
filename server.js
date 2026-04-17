@@ -63,6 +63,19 @@ app.get('/api/transactions', (req, res) => {
     });
 });
 
+// Mock routes for CI validation
+app.get('/api/v1/version', (req, res) => {
+    res.json({ version: '1.0.0', api: 'v1' });
+});
+
+app.get('/api/v1/prices', (req, res) => {
+    res.json({ USDC: 1.00, XLM: 0.12 });
+});
+
+app.get('/api/v1/test', (req, res) => {
+    res.json({ status: 'test successful' });
+});
+
 // Global 404 Not Found handler
 app.use((req, res) => {
     res.status(404).json({ "error": "Route not found" });
