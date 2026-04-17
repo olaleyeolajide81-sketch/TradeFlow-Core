@@ -1,6 +1,6 @@
 #![no_std]
 
-use soroban_sdk::{contract, contractimpl, contracttype, symbol_short, Address, Bytes, BytesN, Env, IntoVal, Map, Symbol, vec};
+use soroban_sdk::{contract, contractimpl, contracttype, symbol_short, Address, Bytes, BytesN, Env, IntoVal, Map, Symbol, vec, xdr::ToXdr};
 
 mod tests;
 
@@ -202,7 +202,7 @@ impl FactoryContract {
         env.storage().instance().set(&DataKey::Pools, &pools);
 
         env.events().publish(
-            (symbol_short!("Admin"), symbol_short!("PoolStatus"), token_a, token_b),
+            (symbol_short!("Admin"), Symbol::new(&env, "PoolStatus"), token_a, token_b),
             pool.paused
         );
     }

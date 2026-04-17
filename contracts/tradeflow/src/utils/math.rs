@@ -116,9 +116,9 @@ pub fn calculate_utilization_fee(
     // Hard cap on maximum dynamic fee (3% = 300 basis points)
     const MAX_DYNAMIC_FEE: u32 = 300;
     
-    // Maximum growth factor: at 100% utilization, multiplier = base_fee * (1 + 5)^1 = 6x
+    // Maximum growth factor: at 100% utilization, multiplier = base_fee * (1 + 9) = 10x
     // This ensures even at extreme utilization, fees don't grow unbounded
-    const MAX_GROWTH_FACTOR: f64 = 5.0;
+    const MAX_GROWTH_FACTOR: f64 = 9.0;
     
     // When current utilization is at or below target, return base fee (no adjustment)
     if current_utilization <= target_utilization {
@@ -134,11 +134,11 @@ pub fn calculate_utilization_fee(
     
     let excess_ratio = (current_u - target_u) / (max_u - target_u);
     
-    // Exponential scaling: multiplier = (1 + MAX_GROWTH_FACTOR)^excess_ratio
-    // Using natural exponential for smooth curve:
+    // Quadratic scaling approximation for no_std WASM compatibility: 
+    // multiplier = 1.0 + MAX_GROWTH_FACTOR * excess_ratio^2
     // - At excess_ratio=0: multiplier = 1 (base fee)
-    // - At excess_ratio=1: multiplier = 1 + MAX_GROWTH_FACTOR (6x base)
-    let multiplier = (1.0 + MAX_GROWTH_FACTOR).powf(excess_ratio);
+    // - At excess_ratio=1: multiplier = 1 + MAX_GROWTH_FACTOR (10x base)
+    let multiplier = 1.0 + MAX_GROWTH_FACTOR * (excess_ratio * excess_ratio);
     
     // Apply multiplier to base fee
     let base_fee_f64 = base_fee as f64;

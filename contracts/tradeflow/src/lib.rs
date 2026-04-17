@@ -681,34 +681,23 @@ impl TradeFlow {
         let total_liquidity: u128 = env.storage().instance().get(&DataKey::TotalLiquidity)
             .unwrap_or(0u128);
 
-            let shares = if total_liquidity == 0 {
-                // First liquidity provider - lock minimum liquidity
-                let initial_shares = fixed_point::mul_div_down(&env, token_a_amount, token_b_amount, 1u128);
-                let shares = if initial_shares == 0 { 0 } else { initial_shares / 1000 }; // Simple approximation
-
-                // Burn the minimum liquidity amount
-                let burn_address = Address::from_string(&soroban_sdk::String::from_str(&env, BURN_ADDRESS));
-                let mut burn_position = LiquidityPosition {
-                    owner: burn_address.clone(),
-                    token_a_amount: 0,
-                    token_b_amount: 0,
-                    shares: MINIMUM_LIQUIDITY,
-                };
-                env.storage().instance().set(&DataKey::LiquidityPosition(burn_address), &burn_position);
-
-                let new_total_liquidity = total_liquidity + MINIMUM_LIQUIDITY;
-                env.storage().instance().set(&DataKey::TotalLiquidity, &new_total_liquidity);
-
-                shares
-            } else {
+        let shares = if total_liquidity == 0 {
             // First liquidity provider - lock minimum liquidity
             let initial_shares = fixed_point::mul_div_down(&env, token_a_amount, token_b_amount, 1u128);
-            let shares = if initial_shares == 0 { 0 } else { initial_shares / 1000 }; // Simple approximation
+
             // Burn the minimum liquidity amount
-            // This is a common practice to prevent certain vulnerabilities
-            // We will need a burn address for this
-            // For now, let's assume a burn address is available
-            // and we can transfer the minimum liquidity to it
+            let burn_address = Address::from_string(&soroban_sdk::String::from_str(&env, BURN_ADDRESS));
+            let burn_position = LiquidityPosition {
+                owner: burn_address.clone(),
+                token_a_amount: 0,
+                token_b_amount: 0,
+                shares: MINIMUM_LIQUIDITY,
+            };
+            env.storage().instance().set(&DataKey::LiquidityPosition(burn_address), &burn_position);
+
+            let new_total_liquidity = total_liquidity + MINIMUM_LIQUIDITY;
+            env.storage().instance().set(&DataKey::TotalLiquidity, &new_total_liquidity);
+
             if initial_shares > MINIMUM_LIQUIDITY {
                 initial_shares - MINIMUM_LIQUIDITY
             } else {
