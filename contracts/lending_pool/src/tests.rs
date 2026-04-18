@@ -1,17 +1,14 @@
-use soroban_sdk::contracterror;
-use crate::LendingPool;
-
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use soroban_sdk::{testutils::Address as TestAddress, testutils::Bytes as TestBytes, Address, Env};
-    use soroban_sdk::contractclient::LendingPoolClient;
+    use soroban_sdk::{Address, Env, token, testutils::{Ledger, Address as _}};
+    use crate::LendingPoolClient;
 
     #[test]
     fn test_initialization() {
         let env = Env::default();
-        let contract_id = env.register_contract(None, LendingPool);
+        let contract_id = env.register(crate::LendingPool, ());
         let client = LendingPoolClient::new(&env, &contract_id);
+        env.mock_all_auths();
 
         let admin = Address::generate(&env);
         let token_address = Address::generate(&env);
@@ -25,8 +22,9 @@ mod tests {
     #[should_panic(expected = "Error(Contract, #9)")] // Unauthorized = 9
     fn test_double_initialization() {
         let env = Env::default();
-        let contract_id = env.register_contract(None, LendingPool);
+        let contract_id = env.register(crate::LendingPool, ());
         let client = LendingPoolClient::new(&env, &contract_id);
+        env.mock_all_auths();
 
         let admin = Address::generate(&env);
         let token_address = Address::generate(&env);
@@ -38,8 +36,9 @@ mod tests {
     #[test]
     fn test_pause_functionality() {
         let env = Env::default();
-        let contract_id = env.register_contract(None, LendingPool);
+        let contract_id = env.register(crate::LendingPool, ());
         let client = LendingPoolClient::new(&env, &contract_id);
+        env.mock_all_auths();
 
         let admin = Address::generate(&env);
         let token_address = Address::generate(&env);
@@ -58,8 +57,9 @@ mod tests {
     #[should_panic(expected = "Error(Contract, #2)")] // ContractPaused = 2
     fn test_deposit_when_paused() {
         let env = Env::default();
-        let contract_id = env.register_contract(None, LendingPool);
+        let contract_id = env.register(crate::LendingPool, ());
         let client = LendingPoolClient::new(&env, &contract_id);
+        env.mock_all_auths();
 
         let admin = Address::generate(&env);
         let token_address = Address::generate(&env);
@@ -72,11 +72,12 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Error(Contract, #2)")] // ContractPaused = 2
+    #[should_panic(expected = "Error(Contract, #11)")] // PoolIsPaused = 11
     fn test_borrow_when_paused() {
         let env = Env::default();
-        let contract_id = env.register_contract(None, LendingPool);
+        let contract_id = env.register(crate::LendingPool, ());
         let client = LendingPoolClient::new(&env, &contract_id);
+        env.mock_all_auths();
 
         let admin = Address::generate(&env);
         let token_address = Address::generate(&env);
@@ -91,8 +92,9 @@ mod tests {
     #[test]
     fn test_create_loan() {
         let env = Env::default();
-        let contract_id = env.register_contract(None, LendingPool);
+        let contract_id = env.register(crate::LendingPool, ());
         let client = LendingPoolClient::new(&env, &contract_id);
+        env.mock_all_auths();
 
         let admin = Address::generate(&env);
         let token_address = Address::generate(&env);
@@ -113,19 +115,21 @@ mod tests {
     #[test]
     fn test_repay_loan() {
         let env = Env::default();
-        let contract_id = env.register_contract(None, LendingPool);
+        let contract_id = env.register(crate::LendingPool, ());
         let client = LendingPoolClient::new(&env, &contract_id);
+        env.mock_all_auths();
 
         let admin = Address::generate(&env);
-        let token_address = Address::generate(&env);
+        let token_address = env.register_stellar_asset_contract_v2(admin.clone()).address();
         client.init(&admin, &token_address);
 
         let borrower = Address::generate(&env);
         let due_date = env.ledger().timestamp() + 86400;
         let loan_id = client.create_loan(&borrower, &1, &1000, &due_date);
 
-        // In a real test, we would set up the token contract and balance
-        // For now, we'll just test the logic
+        let token_client = token::StellarAssetClient::new(&env, &token_address);
+        token_client.mint(&borrower, &2000);
+
         client.repay_loan(&loan_id);
 
         let loan = client.get_loan(&loan_id).unwrap();
@@ -136,16 +140,20 @@ mod tests {
     #[should_panic(expected = "Error(Contract, #5)")] // LoanAlreadyRepaid = 5
     fn test_repay_already_repaid_loan() {
         let env = Env::default();
-        let contract_id = env.register_contract(None, LendingPool);
+        let contract_id = env.register(crate::LendingPool, ());
         let client = LendingPoolClient::new(&env, &contract_id);
+        env.mock_all_auths();
 
         let admin = Address::generate(&env);
-        let token_address = Address::generate(&env);
+        let token_address = env.register_stellar_asset_contract_v2(admin.clone()).address();
         client.init(&admin, &token_address);
 
         let borrower = Address::generate(&env);
         let due_date = env.ledger().timestamp() + 86400;
         let loan_id = client.create_loan(&borrower, &1, &1000, &due_date);
+
+        let token_client = token::StellarAssetClient::new(&env, &token_address);
+        token_client.mint(&borrower, &2000);
 
         client.repay_loan(&loan_id);
         client.repay_loan(&loan_id);
@@ -154,15 +162,15 @@ mod tests {
     #[test]
     fn test_liquidate_loan() {
         let env = Env::default();
-        let contract_id = env.register_contract(None, LendingPool);
+        let contract_id = env.register(crate::LendingPool, ());
         let client = LendingPoolClient::new(&env, &contract_id);
+        env.mock_all_auths();
 
         let admin = Address::generate(&env);
-        let token_address = Address::generate(&env);
+        let token_address = env.register_stellar_asset_contract_v2(admin.clone()).address();
         client.init(&admin, &token_address);
 
         let borrower = Address::generate(&env);
-        let past_date = env.ledger().timestamp() - 86400; // Past due date
         // We have to mock a loan with a past date manually or adjust the ledger
         // For the sake of this test, we assume create_loan logic is tested elsewhere
         let loan_id = client.create_loan(&borrower, &1, &1000, &(env.ledger().timestamp() + 1));
@@ -171,6 +179,9 @@ mod tests {
         env.ledger().set_timestamp(env.ledger().timestamp() + 86401);
 
         let liquidator = Address::generate(&env);
+        let token_client = token::StellarAssetClient::new(&env, &token_address);
+        token_client.mint(&liquidator, &2000);
+
         client.liquidate(&liquidator, &loan_id);
 
         let loan = client.get_loan(&loan_id).unwrap();
@@ -181,8 +192,9 @@ mod tests {
     #[should_panic(expected = "Error(Contract, #10)")]
     fn test_math_overflow_in_create_loan() {
         let env = Env::default();
-        let contract_id = env.register_contract(None, LendingPool);
+        let contract_id = env.register(crate::LendingPool, ());
         let client = LendingPoolClient::new(&env, &contract_id);
+        env.mock_all_auths();
 
         let admin = Address::generate(&env);
         let token_address = Address::generate(&env);
@@ -199,8 +211,9 @@ mod tests {
     #[should_panic(expected = "Error(Contract, #8)")] // CannotLiquidateHealthyLoan = 8
     fn test_liquidate_healthy_loan() {
         let env = Env::default();
-        let contract_id = env.register_contract(None, LendingPool);
+        let contract_id = env.register(crate::LendingPool, ());
         let client = LendingPoolClient::new(&env, &contract_id);
+        env.mock_all_auths();
 
         let admin = Address::generate(&env);
         let token_address = Address::generate(&env);
@@ -217,8 +230,9 @@ mod tests {
     #[test]
     fn test_interest_calculation() {
         let env = Env::default();
-        let contract_id = env.register_contract(None, LendingPool);
+        let contract_id = env.register(crate::LendingPool, ());
         let client = LendingPoolClient::new(&env, &contract_id);
+        env.mock_all_auths();
 
         let admin = Address::generate(&env);
         let token_address = Address::generate(&env);
@@ -236,7 +250,7 @@ mod tests {
     #[test]
     fn test_calculate_flash_fee() {
         let env = Env::default();
-        let contract_id = env.register_contract(None, LendingPool);
+        let contract_id = env.register(crate::LendingPool, ());
         let client = LendingPoolClient::new(&env, &contract_id);
 
         // 10000 * 8 / 10000 = 8
@@ -260,7 +274,7 @@ mod tests {
     #[should_panic(expected = "Error(Contract, #10)")] // MathOverflow = 10
     fn test_calculate_flash_fee_negative() {
         let env = Env::default();
-        let contract_id = env.register_contract(None, LendingPool);
+        let contract_id = env.register(crate::LendingPool, ());
         let client = LendingPoolClient::new(&env, &contract_id);
 
         client.calculate_flash_fee(&-100);
@@ -270,8 +284,9 @@ mod tests {
     #[should_panic(expected = "Error(Contract, #10)")] // MathOverflow = 10
     fn test_flash_loan_zero_amount() {
         let env = Env::default();
-        let contract_id = env.register_contract(None, LendingPool);
+        let contract_id = env.register(crate::LendingPool, ());
         let client = LendingPoolClient::new(&env, &contract_id);
+        env.mock_all_auths();
 
         let admin = Address::generate(&env);
         let token_address = Address::generate(&env);
@@ -287,11 +302,12 @@ mod tests {
     #[should_panic(expected = "Error(Contract, #3)")] // InsufficientLiquidity = 3
     fn test_flash_loan_insufficient_liquidity() {
         let env = Env::default();
-        let contract_id = env.register_contract(None, LendingPool);
+        let contract_id = env.register(crate::LendingPool, ());
         let client = LendingPoolClient::new(&env, &contract_id);
+        env.mock_all_auths();
 
         let admin = Address::generate(&env);
-        let token_address = Address::generate(&env);
+        let token_address = env.register_stellar_asset_contract_v2(admin.clone()).address();
         client.init(&admin, &token_address);
 
         let receiver = Address::generate(&env);
@@ -302,14 +318,15 @@ mod tests {
     // mock because client.balance() will panic or return 0, leading to EmptyPool.
     // We can at least test the EmptyPool error when balance is 0.
     #[test]
-    #[should_panic(expected = "Error(Contract, #11)")] // EmptyPool = 11
+    #[should_panic(expected = "Error(Contract, #12)")] // EmptyPool = 12
     fn test_swap_empty_pool() {
         let env = Env::default();
-        let contract_id = env.register_contract(None, LendingPool);
+        let contract_id = env.register(crate::LendingPool, ());
         let client = LendingPoolClient::new(&env, &contract_id);
+        env.mock_all_auths();
 
         let admin = Address::generate(&env);
-        let token_address = Address::generate(&env);
+        let token_address = env.register_stellar_asset_contract_v2(admin.clone()).address();
         client.init(&admin, &token_address);
 
         let user = Address::generate(&env);

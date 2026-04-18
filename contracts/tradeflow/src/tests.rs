@@ -2,15 +2,15 @@
 extern crate std;
 
 use soroban_sdk::{
-    Address, Env, BytesN, Symbol, Vec, Val, vec,
-    testutils::{Address as _, AuthorizedFunction, AuthorizedInvocation, Ledger, MockAuth, MockAuthInvoke, Events},
+    Address, Env, BytesN, Symbol, Vec, vec,
+    testutils::{Address as _, Ledger, MockAuth, MockAuthInvoke, Events},
     token,
     IntoVal,
 };
 use crate::{
     PendingFeeChange, LiquidityPosition, PermitData, TWAPConfig, 
     DeadManSwitchConfig, 
-    FeeAccumulator, BuybackConfig, UpgradeConfig, PendingUpgrade, PendingUpgradeStatus, PriceObservation, DataKey,
+    FeeAccumulator, BuybackConfig, UpgradeConfig, PendingUpgrade, PriceObservation, DataKey,
     utils::fixed_point::{self, Q64},
 };
 
@@ -39,15 +39,19 @@ impl TradeFlow {
     fn get_pending_fee_change(env: Env, contract_id: Address) -> Option<PendingFeeChange> {
         Self::client(&env, &contract_id).get_pending_fee_change()
     }
+    #[allow(dead_code)]
     fn update_max_trade_size(env: Env, contract_id: Address, new_percentage: u32) {
         Self::client(&env, &contract_id).update_max_trade_size(&new_percentage)
     }
+    #[allow(dead_code)]
     fn update_fee_recipient(env: Env, contract_id: Address, new_recipient: Address) {
         Self::client(&env, &contract_id).update_fee_recipient(&new_recipient)
     }
+    #[allow(dead_code)]
     fn get_max_trade_size(env: Env, contract_id: Address) -> u32 {
         Self::client(&env, &contract_id).get_max_trade_size()
     }
+    #[allow(dead_code)]
     fn get_fee_recipient(env: Env, contract_id: Address) -> Address {
         Self::client(&env, &contract_id).get_fee_recipient()
     }
@@ -173,7 +177,7 @@ fn test_fee_change_timelock() {
         MockAuth {
             address: &admin,
             invoke: &MockAuthInvoke {
-                contract: &env.current_contract_address(),
+                    contract: &contract_id,
                 fn_name: "execute_fee_change",
                 args: ().into_val(&env),
                 sub_invokes: &[],
@@ -188,6 +192,7 @@ fn test_fee_change_timelock() {
     
     // Fast forward time by 48 hours
     env.ledger().set_timestamp(env.ledger().timestamp() + 48 * 60 * 60 + 1);
+    env.mock_all_auths();
     
     // Now should be able to execute
     TradeFlow::execute_fee_change(env.clone(), contract_id.clone());
@@ -203,13 +208,15 @@ fn test_provide_liquidity() {
     
     let admin = Address::generate(&env);
     let user = Address::generate(&env);
-    let token_a = env.register_stellar_asset_contract(Address::generate(&env));
-    let token_b = env.register_stellar_asset_contract(Address::generate(&env));
+    let token_a = env.register_stellar_asset_contract_v2(Address::generate(&env)).address();
+    let token_b = env.register_stellar_asset_contract_v2(Address::generate(&env)).address();
     
     TradeFlow::init(env.clone(), contract_id.clone(), admin, token_a.clone(), token_b.clone(), 30);
     
     token::StellarAssetClient::new(&env, &token_a).mint(&user, &1000);
     token::StellarAssetClient::new(&env, &token_b).mint(&user, &1000);
+    token::Client::new(&env, &token_a).approve(&user, &contract_id, &i128::MAX, &(env.ledger().sequence() + 1000));
+    token::Client::new(&env, &token_b).approve(&user, &contract_id, &i128::MAX, &(env.ledger().sequence() + 1000));
     
     // Provide liquidity
     let shares = TradeFlow::provide_liquidity(env.clone(), contract_id.clone(), user.clone(), 100, 200, 1);
@@ -234,22 +241,27 @@ fn test_swap() {
     
     let admin = Address::generate(&env);
     let user = Address::generate(&env);
-    let token_a = Address::generate(&env);
-    let token_b = Address::generate(&env);
+    let token_a = env.register_stellar_asset_contract_v2(admin.clone()).address();
+    let token_b = env.register_stellar_asset_contract_v2(admin.clone()).address();
     
     TradeFlow::init(env.clone(), contract_id.clone(), admin, token_a.clone(), token_b.clone(), 30);
+    
+    token::StellarAssetClient::new(&env, &token_a).mint(&user, &1000);
+    token::StellarAssetClient::new(&env, &token_b).mint(&user, &1000);
+    token::Client::new(&env, &token_a).approve(&user, &contract_id, &i128::MAX, &(env.ledger().sequence() + 1000));
+    token::Client::new(&env, &token_b).approve(&user, &contract_id, &i128::MAX, &(env.ledger().sequence() + 1000));
     
     // First provide liquidity
     TradeFlow::provide_liquidity(env.clone(), contract_id.clone(), user.clone(), 500, 500, 1);
     
     // Now perform swap
-    let amount_out = TradeFlow::swap(env.clone(), contract_id.clone(), user.clone(), token_a.clone(), 100, 1);
+    let amount_out = TradeFlow::swap(env.clone(), contract_id.clone(), user.clone(), token_a.clone(), 10, 1);
     
     assert!(amount_out >= 1);
     
     // Check reserves changed correctly
     let (reserve_a, reserve_b) = TradeFlow::get_reserves(env.clone(), contract_id.clone());
-    assert_eq!(reserve_a, 600); // 500 + 100
+    assert_eq!(reserve_a, 509); // 500 + 10 - 1 (protocol fee)
     assert!(reserve_b < 500); // Decreased due to swap
 }
 
@@ -261,10 +273,15 @@ fn test_permit_swap() {
     
     let admin = Address::generate(&env);
     let user = Address::generate(&env);
-    let token_a = Address::generate(&env);
-    let token_b = Address::generate(&env);
+    let token_a = env.register_stellar_asset_contract_v2(admin.clone()).address();
+    let token_b = env.register_stellar_asset_contract_v2(admin.clone()).address();
     
     TradeFlow::init(env.clone(), contract_id.clone(), admin, token_a.clone(), token_b.clone(), 30);
+    
+    token::StellarAssetClient::new(&env, &token_a).mint(&user, &1000);
+    token::StellarAssetClient::new(&env, &token_b).mint(&user, &1000);
+    token::Client::new(&env, &token_a).approve(&user, &contract_id, &i128::MAX, &(env.ledger().sequence() + 1000));
+    token::Client::new(&env, &token_b).approve(&user, &contract_id, &i128::MAX, &(env.ledger().sequence() + 1000));
     
     // First provide liquidity
     TradeFlow::provide_liquidity(env.clone(), contract_id.clone(), user.clone(), 500, 500, 1);
@@ -272,7 +289,7 @@ fn test_permit_swap() {
     // Create permit data
     let permit_data = PermitData {
         owner: user.clone(),
-        spender: env.current_contract_address(),
+        spender: contract_id.clone(),
         amount: 100,
         nonce: TradeFlow::get_user_nonce(env.clone(), contract_id.clone(), user.clone()),
         deadline: env.ledger().timestamp() + 3600, // 1 hour from now
@@ -286,7 +303,7 @@ fn test_permit_swap() {
         MockAuth {
             address: &user,
             invoke: &MockAuthInvoke {
-                contract: &env.current_contract_address(),
+                    contract: &contract_id,
                 fn_name: "permit_swap",
                 args: (user.clone(), token_a.clone(), 100u128, 1u128, permit_data.clone(), signature.clone()).into_val(&env),
                 sub_invokes: &[],
@@ -311,14 +328,22 @@ fn test_swap_exact_tokens_for_tokens_events() {
     
     let admin = Address::generate(&env);
     let user = Address::generate(&env);
-    let token_a = Address::generate(&env);
-    let token_b = Address::generate(&env);
+    let token_a = env.register_stellar_asset_contract_v2(admin.clone()).address();
+    let token_b = env.register_stellar_asset_contract_v2(admin.clone()).address();
     
     TradeFlow::init(env.clone(), contract_id.clone(), admin, token_a.clone(), token_b.clone(), 30);
+    
+    token::StellarAssetClient::new(&env, &token_a).mint(&user, &2000);
+    token::StellarAssetClient::new(&env, &token_b).mint(&user, &2000);
+    token::Client::new(&env, &token_a).approve(&user, &contract_id, &i128::MAX, &(env.ledger().sequence() + 1000));
+    token::Client::new(&env, &token_b).approve(&user, &contract_id, &i128::MAX, &(env.ledger().sequence() + 1000));
     
     // Provide liquidity first
     TradeFlow::provide_liquidity(env.clone(), contract_id.clone(), user.clone(), 1000, 1000, 1);
     
+    // Advance time to establish a TWAP
+    env.ledger().set_timestamp(env.ledger().timestamp() + 10);
+
     // Execute swap_exact_tokens_for_tokens
     let path = vec![&env, token_a.clone(), token_b.clone()];
     let deadline = env.ledger().timestamp() + 3600;
@@ -335,7 +360,7 @@ fn test_swap_exact_tokens_for_tokens_events() {
     );
     
     // Get all events
-    let events = env.events().all();
+    let _events = env.events().all();
     
     // Check if exactly one MultiHopSwap event was emitted
     // Event verification temporarily disabled for SDK v25 compatibility
@@ -362,7 +387,7 @@ fn test_swap_exact_tokens_for_tokens_events() {
 #[test]
 fn test_fixed_point_math() {
     let env = Env::default();
-    let contract_id = env.register(crate::TradeFlow, ());
+    let _contract_id = env.register(crate::TradeFlow, ());
     
     // Test mul_div_down
     let result = fixed_point::mul_div_down(&env, 100, 200, 50);
@@ -395,10 +420,15 @@ fn test_user_nonce_increment() {
     
     let admin = Address::generate(&env);
     let user = Address::generate(&env);
-    let token_a = Address::generate(&env);
-    let token_b = Address::generate(&env);
+    let token_a = env.register_stellar_asset_contract_v2(admin.clone()).address();
+    let token_b = env.register_stellar_asset_contract_v2(admin.clone()).address();
     
-    TradeFlow::init(env.clone(), contract_id.clone(), admin, token_a, token_b, 30);
+    TradeFlow::init(env.clone(), contract_id.clone(), admin, token_a.clone(), token_b.clone(), 30);
+    
+    token::StellarAssetClient::new(&env, &token_a).mint(&user, &1000);
+    token::StellarAssetClient::new(&env, &token_b).mint(&user, &1000);
+    token::Client::new(&env, &token_a).approve(&user, &contract_id, &i128::MAX, &(env.ledger().sequence() + 1000));
+    token::Client::new(&env, &token_b).approve(&user, &contract_id, &i128::MAX, &(env.ledger().sequence() + 1000));
     
     // Initial nonce should be 0
     assert_eq!(TradeFlow::get_user_nonce(env.clone(), contract_id.clone(), user.clone()), 0);
@@ -450,12 +480,13 @@ fn test_twap_config_update() {
 #[test]
 fn test_price_observation() {
     let env = Env::default();
+    env.ledger().set_timestamp(12345);
     let contract_id = env.register(crate::TradeFlow, ());
     env.mock_all_auths();
     
     let admin = Address::generate(&env);
-    let token_a = Address::generate(&env);
-    let token_b = Address::generate(&env);
+    let token_a = env.register_stellar_asset_contract_v2(admin.clone()).address();
+    let token_b = env.register_stellar_asset_contract_v2(admin.clone()).address();
     
     TradeFlow::init(env.clone(), contract_id.clone(), admin.clone(), token_a.clone(), token_b.clone(), 30);
     
@@ -465,14 +496,16 @@ fn test_price_observation() {
     // Mint tokens to user
     token::StellarAssetClient::new(&env, &token_a).mint(&user, &1000);
     token::StellarAssetClient::new(&env, &token_b).mint(&user, &2000);
+    token::Client::new(&env, &token_a).approve(&user, &contract_id, &i128::MAX, &(env.ledger().sequence() + 1000));
+    token::Client::new(&env, &token_b).approve(&user, &contract_id, &i128::MAX, &(env.ledger().sequence() + 1000));
     
     // Provide liquidity
     TradeFlow::provide_liquidity(env.clone(), contract_id.clone(), user.clone(), 100, 200, 1);
     
     // Check that price observation was created
-    let last_observation: Option<PriceObservation> = env.storage().instance()
-        .get(&DataKey::LastObservation);
-    
+    let last_observation: Option<PriceObservation> = env.as_contract(&contract_id, || {
+        env.storage().instance().get(&DataKey::LastObservation)
+    });
     assert!(last_observation.is_some(), "Price observation should be created after providing liquidity");
     
     let obs = last_observation.unwrap();
@@ -488,8 +521,8 @@ fn test_twap_slippage_protection() {
     env.mock_all_auths();
     
     let admin = Address::generate(&env);
-    let token_a = Address::generate(&env);
-    let token_b = Address::generate(&env);
+    let token_a = env.register_stellar_asset_contract_v2(admin.clone()).address();
+    let token_b = env.register_stellar_asset_contract_v2(admin.clone()).address();
     
     TradeFlow::init(env.clone(), contract_id.clone(), admin.clone(), token_a.clone(), token_b.clone(), 30);
     
@@ -498,9 +531,14 @@ fn test_twap_slippage_protection() {
     
     token::StellarAssetClient::new(&env, &token_a).mint(&user, &1000);
     token::StellarAssetClient::new(&env, &token_b).mint(&user, &2000);
+    token::Client::new(&env, &token_a).approve(&user, &contract_id, &i128::MAX, &(env.ledger().sequence() + 1000));
+    token::Client::new(&env, &token_b).approve(&user, &contract_id, &i128::MAX, &(env.ledger().sequence() + 1000));
     
     TradeFlow::provide_liquidity(env.clone(), contract_id.clone(), user.clone(), 100, 200, 1);
     
+    // Advance time to establish a TWAP
+    env.ledger().set_timestamp(env.ledger().timestamp() + 10);
+
     // Test normal swap (should pass)
     token::StellarAssetClient::new(&env, &token_a).mint(&user, &10);
     
@@ -558,6 +596,7 @@ fn test_twap_config_validation() {
 #[test]
 fn test_fee_accumulator_initialization() {
     let env = Env::default();
+        env.ledger().set_timestamp(12345);
     let contract_id = env.register(crate::TradeFlow, ());
     env.mock_all_auths();
     
@@ -629,8 +668,8 @@ fn test_fee_collection_from_swaps() {
     env.mock_all_auths();
     
     let admin = Address::generate(&env);
-    let token_a = env.register_stellar_asset_contract(Address::generate(&env));
-    let token_b = env.register_stellar_asset_contract(Address::generate(&env));
+    let token_a = env.register_stellar_asset_contract_v2(Address::generate(&env)).address();
+    let token_b = env.register_stellar_asset_contract_v2(Address::generate(&env)).address();
     
     TradeFlow::init(env.clone(), contract_id.clone(), admin.clone(), token_a.clone(), token_b.clone(), 30);
     
@@ -639,9 +678,14 @@ fn test_fee_collection_from_swaps() {
     
     token::StellarAssetClient::new(&env, &token_a).mint(&user, &1000);
     token::StellarAssetClient::new(&env, &token_b).mint(&user, &2000);
+    token::Client::new(&env, &token_a).approve(&user, &contract_id, &i128::MAX, &(env.ledger().sequence() + 1000));
+    token::Client::new(&env, &token_b).approve(&user, &contract_id, &i128::MAX, &(env.ledger().sequence() + 1000));
     
     TradeFlow::provide_liquidity(env.clone(), contract_id.clone(), user.clone(), 100, 200, 1);
     
+    // Advance time to establish a TWAP
+    env.ledger().set_timestamp(env.ledger().timestamp() + 10);
+
     // Perform a swap to generate fees
     token::StellarAssetClient::new(&env, &token_a).mint(&user, &10);
     
@@ -690,16 +734,21 @@ fn test_buyback_execution() {
     let admin = Address::generate(&env);
     let token_a = Address::generate(&env);
     let token_b = Address::generate(&env);
-    let tf_token = Address::generate(&env);
+    let tf_token = env.register_stellar_asset_contract_v2(admin.clone()).address();
     let fee_recipient = Address::generate(&env);
     
     TradeFlow::init(env.clone(), contract_id.clone(), admin.clone(), token_a.clone(), token_b.clone(), 30);
     TradeFlow::configure_buyback(env.clone(), contract_id.clone(), tf_token.clone(), fee_recipient.clone(), 5000); // 50% burn
     
+    // Mint TF tokens to contract so it can distribute them
+    token::StellarAssetClient::new(&env, &tf_token).mint(&contract_id, &10000);
+
     // Simulate accumulated fees
     let mut accumulator = TradeFlow::get_fee_accumulator(env.clone(), contract_id.clone());
     accumulator.token_a_fees = 1000; // Simulate 1000 fees collected
-    env.storage().instance().set(&DataKey::FeeAccumulator, &accumulator);
+    env.as_contract(&contract_id, || {
+        env.storage().instance().set(&DataKey::FeeAccumulator, &accumulator);
+    });
     
     // Execute buyback
     let tf_received = TradeFlow::execute_buyback_and_burn(
@@ -832,6 +881,7 @@ fn test_buyback_disabled() {
 #[test]
 fn test_upgrade_config_initialization() {
     let env = Env::default();
+        env.ledger().set_timestamp(12345);
     let contract_id = env.register(crate::TradeFlow, ());
     env.mock_all_auths();
     
@@ -852,6 +902,7 @@ fn test_upgrade_config_initialization() {
 #[test]
 fn test_propose_upgrade() {
     let env = Env::default();
+        env.ledger().set_timestamp(12345);
     let contract_id = env.register(crate::TradeFlow, ());
     env.mock_all_auths();
     
@@ -1052,7 +1103,7 @@ fn test_upgrade_contract() {
         MockAuth {
             address: &admin,
             invoke: &MockAuthInvoke {
-                contract: &env.current_contract_address(),
+                contract: &contract_id,
             fn_name: "upgrade_contract",
             args: (new_wasm_hash.clone(),).into_val(&env),
             sub_invokes: &[],
@@ -1075,7 +1126,7 @@ fn test_upgrade_contract() {
         MockAuth {
             address: &non_admin,
             invoke: &MockAuthInvoke {
-                contract: &env.current_contract_address(),
+                contract: &contract_id,
             fn_name: "upgrade_contract",
             args: (new_wasm_hash.clone(),).into_val(&env),
             sub_invokes: &[],

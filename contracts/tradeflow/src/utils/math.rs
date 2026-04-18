@@ -33,6 +33,7 @@ use super::fixed_point::*;
 /// Where x_new = x + amount_in and y_new = y - amount_out
 /// 
 /// This expands to a quadratic in terms of amount_out, which we solve iteratively.
+#[allow(dead_code)]
 pub fn calculate_stableswap_amount_out(
     _env: &Env,
     amount_in: u128,

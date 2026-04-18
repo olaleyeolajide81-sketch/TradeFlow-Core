@@ -1,3 +1,5 @@
+#![no_std]
+
 use soroban_sdk::{
     contract, contractimpl, contracttype, 
     token, Address, Env, Symbol, BytesN, Vec, Val, IntoVal
@@ -357,18 +359,18 @@ impl TradeFlow {
             if time_elapsed == 0 {
                 // Use current spot price if no time has elapsed
                 return Ok(if token_in == env.storage().instance().get(&DataKey::TokenA).unwrap() {
-                    current_obs.price_a_per_b
-                } else {
                     current_obs.price_b_per_a
+                } else {
+                    current_obs.price_a_per_b
                 });
             }
             
             // For simplicity, we'll use the current observation price
             // In a full implementation, you'd average over the time window
             Ok(if token_in == env.storage().instance().get(&DataKey::TokenA).unwrap() {
-                current_obs.price_a_per_b
-            } else {
                 current_obs.price_b_per_a
+            } else {
+                current_obs.price_a_per_b
             })
         } else {
             Err("No price observations available")
@@ -770,6 +772,9 @@ impl TradeFlow {
 
         env.storage().instance().set(&DataKey::LiquidityPosition(user.clone()), &position);
 
+        // Update price observation after providing liquidity
+        Self::update_price_observation(&env);
+
         // Reset reentrancy status (#108)
         env.storage().instance().set(&DataKey::ReentrancyStatus, &1u32);
 
@@ -860,7 +865,7 @@ impl TradeFlow {
 
             // Check TWAP slippage protection before executing
             Self::check_slippage_protection(&env, token_in.clone(), amount_in, amount_out)
-                .unwrap_or_else(|e| panic!("TWAP protection: {}", e));
+                .unwrap_or_else(|_| panic!("TWAP protection failed"));
 
             let new_reserve_a = reserve_a + amount_in;
             let new_reserve_b = reserve_b - amount_out;
@@ -886,7 +891,7 @@ impl TradeFlow {
 
             // Check TWAP slippage protection before executing
             Self::check_slippage_protection(&env, token_in.clone(), amount_in, amount_out)
-                .unwrap_or_else(|e| panic!("TWAP protection: {}", e));
+                .unwrap_or_else(|_| panic!("TWAP protection failed"));
 
             let new_reserve_b = reserve_b + amount_in;
             let new_reserve_a = reserve_a - amount_out;
