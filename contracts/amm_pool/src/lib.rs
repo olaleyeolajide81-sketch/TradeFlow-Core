@@ -1,5 +1,5 @@
 #![no_std]
-use soroban_sdk::{contract, contractimpl, contracttype, token, Address, Env, symbol_short, Symbol};
+use soroban_sdk::{contract, contractimpl, contracttype, token, Address, Env, symbol_short};
 
 mod tests;
 
@@ -9,7 +9,7 @@ pub struct PoolState {
     pub token_a: Address,
     pub token_b: Address,
     // Storing as u32 to match token interface
-    pub token_a_decimals: u32, 
+    pub token_a_decimals: u32,
     pub token_b_decimals: u32,
     pub reserve_a: i128,
     pub reserve_b: i128,
@@ -88,6 +88,12 @@ impl AmmPool {
 
     /// Provide liquidity after verifying the user holds sufficient balance and allowance
     /// for both tokens. Call-sites 1 and 2 for verify_balance_and_allowance.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban execution environment.
+    /// * `user` - The address of the liquidity provider.
+    /// * `amount_a` - The amount of `token_a` to deposit into the pool.
+    /// * `amount_b` - The amount of `token_b` to deposit into the pool.
     pub fn provide_liquidity(env: Env, user: Address, amount_a: i128, amount_b: i128) {
         user.require_auth();
         Self::require_not_frozen(&env, &user);
@@ -131,7 +137,7 @@ impl AmmPool {
         env.storage()
             .instance()
             .set(&DataKey::FrozenAddress(address.clone()), &frozen);
-        
+
         // Emit event for transparency
         env.events().publish(
             (symbol_short!("Freeze"), symbol_short!("Status")),
@@ -211,7 +217,7 @@ impl AmmPool {
 
         // Emit massive ProtocolEmergencyEject event to alert all indexers
         env.events().publish(
-            (symbol_short!("EmergEjct"), symbol_short!("CRITICAL")), 
+            (symbol_short!("EmergEjct"), symbol_short!("CRITICAL")),
             (env.current_contract_address(), state.token_a.clone(), state.token_b.clone(), state.reserve_a, state.reserve_b)
         );
 
@@ -228,18 +234,18 @@ impl AmmPool {
         state.reserve_a = 0;
         state.reserve_b = 0;
         state._status = 0; // Unlock reentrancy protection
-        
+
         env.storage().instance().set(&DataKey::State, &state);
 
         // Emit completion event
         env.events().publish(
-            (symbol_short!("EmergEjct"), symbol_short!("COMPLETED")), 
+            (symbol_short!("EmergEjct"), symbol_short!("COMPLETED")),
             env.current_contract_address()
         );
     }
 
     /// Calculate the output amount for a given input amount.
-    /// 
+    ///
     /// Scaling formulas:
     /// - scaled = raw * 10^(18 - token_decimals)
     /// - output_native = output_scaled / 10^(18 - target_decimals)
@@ -273,11 +279,11 @@ impl AmmPool {
         // amount_out_scaled = (reserve_out_scaled * amount_in_scaled) / (reserve_in_scaled + amount_in_scaled)
         let numerator = reserve_out_scaled.saturating_mul(amount_in_scaled);
         let denominator = reserve_in_scaled.saturating_add(amount_in_scaled);
-        
+
         if denominator == 0 {
             return 0;
         }
-        
+
         let output_scaled = numerator / denominator;
 
         // Scale back to target token's native decimals with round half-up
@@ -293,7 +299,7 @@ impl AmmPool {
         // Calculate precision loss
         let output_scaled_from_native = output_native.saturating_mul(scale_out);
         let loss = output_scaled.abs_diff(output_scaled_from_native);
-        
+
         // Emit debug event if precision loss exceeds 0.01% (i.e., loss * 10000 > output_scaled)
         if loss.saturating_mul(10000) > output_scaled.unsigned_abs() {
             env.events().publish((symbol_short!("warn"), symbol_short!("prec_loss")), loss as i128);
@@ -305,6 +311,15 @@ impl AmmPool {
     /// Swap tokens: verify user balance/allowance for the input token (call-site 3),
     /// then calculate and return the output amount using the constant-product formula.
     /// Does not perform actual token transfers (out of scope for this feature).
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban execution environment.
+    /// * `user` - The address of the user initiating the swap.
+    /// * `amount_in` - The amount of input tokens being swapped.
+    /// * `is_a_in` - Boolean flag: `true` if input is token A, `false` if input is token B.
+    ///
+    /// # Returns
+    /// The calculated amount of the output token based on the constant-product formula.
     pub fn swap(env: Env, user: Address, amount_in: i128, is_a_in: bool) -> i128 {
         Self::require_not_frozen(&env, &user);
         let state: PoolState = env.storage().instance().get(&DataKey::State).expect("Not initialized");
@@ -339,8 +354,9 @@ impl AmmPool {
     }
 
     /// Read the current pool reserve ratio (reserve_a / reserve_b) scaled by 10^7.
-    pub fn get_spot_price(env: Env) -> u128 {        let state: PoolState = env.storage().instance().get(&DataKey::State).expect("Not initialized");
-        
+    pub fn get_spot_price(env: Env) -> u128 {
+        let state: PoolState = env.storage().instance().get(&DataKey::State).expect("Not initialized");
+
         if state.reserve_b == 0 {
             panic!("reserve_b is zero");
         }
