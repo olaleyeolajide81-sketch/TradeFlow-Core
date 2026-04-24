@@ -2,7 +2,7 @@ use soroban_sdk::contracttype;
 
 #[contracttype]
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Error {
+pub enum TradeFlowError {
     /// Token allowance is insufficient for the requested transfer amount
     InsufficientAllowance = 1,
     /// Contract has not been initialized
@@ -41,31 +41,28 @@ pub enum Error {
     SlippageExceeded = 18,
 }
 
-impl Error {
+impl TradeFlowError {
     pub fn as_str(&self) -> &'static str {
         match self {
-            Error::InsufficientAllowance => "Insufficient token allowance. Please approve the contract to spend your tokens.",
-            Error::NotInitialized => "Contract has not been initialized",
-            Error::InvalidTokenAddress => "Invalid token address provided",
-            Error::InsufficientLiquidity => "Insufficient liquidity in the pool",
-            Error::InsufficientOutputAmount => "Insufficient output amount - slippage protection triggered",
-            Error::InsufficientSharesReceived => "Insufficient liquidity shares received",
-            Error::FeeTooHigh => "Fee exceeds maximum allowed (100%)",
-            Error::TimelockNotElapsed => "Timelock period has not elapsed yet",
-            Error::NoPendingFeeChange => "No pending fee change found",
-            Error::PermitExpired => "Permit signature has expired",
-            Error::PermitOwnerMismatch => "Permit owner mismatch",
-            Error::InvalidNonce => "Invalid nonce in permit",
-            Error::InvalidPermitSignature => "Invalid permit signature",
-            Error::FlashLoanActive => "Flash loan is currently active - pool operations are locked",
-            Error::TradeSizeExceedsMaximum => "Trade size exceeds maximum allowed percentage",
-            Error::FactoryPaused => "Factory is paused - all operations are halted",
-            Error::InsufficientBalance => "Insufficient balance for requested operation",
-            Error::SlippageExceeded => "Slippage exceeded during swap",
+            TradeFlowError::InsufficientAllowance => "Insufficient token allowance. Please approve the contract to spend your tokens.",
+            TradeFlowError::NotInitialized => "Contract has not been initialized",
+            TradeFlowError::InvalidTokenAddress => "Invalid token address provided",
+            TradeFlowError::InsufficientLiquidity => "Insufficient liquidity in the pool",
+            TradeFlowError::InsufficientOutputAmount => "Insufficient output amount - slippage protection triggered",
+            TradeFlowError::InsufficientSharesReceived => "Insufficient liquidity shares received",
+            TradeFlowError::FeeTooHigh => "Fee exceeds maximum allowed (100%)",
+            TradeFlowError::TimelockNotElapsed => "Timelock period has not elapsed yet",
+            TradeFlowError::NoPendingFeeChange => "No pending fee change found",
+            TradeFlowError::PermitExpired => "Permit signature has expired",
+            TradeFlowError::PermitOwnerMismatch => "Permit owner mismatch",
+            TradeFlowError::InvalidNonce => "Invalid nonce in permit",
+            TradeFlowError::InvalidPermitSignature => "Invalid permit signature",
+            TradeFlowError::FlashLoanActive => "Flash loan is currently active - pool operations are locked",
+            TradeFlowError::TradeSizeExceedsMaximum => "Trade size exceeds maximum allowed percentage",
         }
     }
 }
 
-pub fn check_and_panic_error(error: Error) -> ! {
+pub fn check_and_panic_error(error: TradeFlowError) -> ! {
     panic!("{}", error.as_str());
 }

@@ -6,12 +6,12 @@ test:
 	cargo test
 
 build:
-	cargo build --target wasm32-unknown-unknown --release
+	cargo build --target wasm32v1-none --release
 
 deploy-testnet:
 	@echo "Deploying invoice_nft contract to Stellar Testnet..."
 	@CONTRACT_ID=$$(soroban contract deploy \
-		--wasm target/wasm32-unknown-unknown/release/invoice_nft.wasm \
+		--wasm target/wasm32v1-none/release/invoice_nft.wasm \
 		--source alice \
 		--network testnet); \
 	echo "Contract deployed successfully!"; \

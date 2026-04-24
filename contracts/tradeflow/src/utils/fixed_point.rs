@@ -45,11 +45,13 @@ pub fn scale_down(_env: &Env, value: u128) -> u128 {
 }
 
 /// Performs fixed-point multiplication using Q64 scaling
+#[allow(dead_code)]
 pub fn fixed_mul(env: &Env, a: u128, b: u128) -> u128 {
     mul_div_down(env, a, b, Q64)
 }
 
 /// Performs fixed-point division using Q64 scaling
+#[allow(dead_code)]
 pub fn fixed_div(env: &Env, a: u128, b: u128) -> u128 {
     mul_div_up(env, a, Q64, b)
 }

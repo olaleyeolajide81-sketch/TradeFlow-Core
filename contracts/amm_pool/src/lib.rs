@@ -13,14 +13,22 @@ pub struct PoolState {
     pub token_b_decimals: u32,
     pub reserve_a: i128,
     pub reserve_b: i128,
+    pub fee_tier: u32, // Fee tier in basis points (5, 30, or 100)
     pub is_deprecated: bool,
     pub _status: u32, // 0 = unlocked, 1 = locked (reentrancy protection)
+    pub deposits_paused: bool,    // When true, new deposits and swaps are blocked
+    pub withdrawals_paused: bool, // When true, liquidity removals are blocked
+    // TWAP Oracle state variables
+    pub price_0_cumulative_last: u128, // Cumulative price for token_0
+    pub price_1_cumulative_last: u128, // Cumulative price for token_1
+    pub block_timestamp_last: u32,     // Last update timestamp
 }
 
 #[contracttype]
 pub enum DataKey {
     State,
     Admin,
+    FrozenAddress(Address),
 }
 
 #[contract]
@@ -28,11 +36,12 @@ pub struct AmmPool;
 
 #[contractimpl]
 impl AmmPool {
-    /// Initialize the AMM pool with two tokens and admin.
+    /// Initialize the AMM pool with two tokens, admin, and fee tier.
     /// 1. Queries the Stellar network to fetch exact decimal precision via Soroban token interface.
     /// 2. Validates that both values are positive integers <= 18.
-    /// 3. Aborts initialization if either token's decimals cannot be determined or are invalid.
-    pub fn init(env: Env, admin: Address, token_a: Address, token_b: Address) {
+    /// 3. Validates fee tier is one of the supported values (5, 30, or 100 basis points).
+    /// 4. Aborts initialization if validation fails.
+    pub fn init(env: Env, admin: Address, token_a: Address, token_b: Address, fee_tier: u32) {
         if env.storage().instance().has(&DataKey::State) {
             panic!("Already initialized");
         }
@@ -50,6 +59,11 @@ impl AmmPool {
             panic!("Invalid decimals for token_b");
         }
 
+        // Validate fee tier
+        if fee_tier != 5 && fee_tier != 30 && fee_tier != 100 {
+            panic!("Invalid fee tier. Only 5, 30, or 100 basis points are supported");
+        }
+
         let state = PoolState {
             token_a,
             token_b,
@@ -57,17 +71,32 @@ impl AmmPool {
             token_b_decimals: decimals_b,
             reserve_a: 0,
             reserve_b: 0,
+            fee_tier,
             is_deprecated: false,
             _status: 0, // Start unlocked
+            deposits_paused: false,
+            withdrawals_paused: false,
+            // Initialize TWAP oracle state
+            price_0_cumulative_last: 0,
+            price_1_cumulative_last: 0,
+            block_timestamp_last: 0,
         };
 
         env.storage().instance().set(&DataKey::State, &state);
         env.storage().instance().set(&DataKey::Admin, &admin);
     }
 
-    /// Provide liquidity (simplified for testing AMM calculations)
-    pub fn provide_liquidity(env: Env, amount_a: i128, amount_b: i128) {
+    /// Provide liquidity after verifying the user holds sufficient balance and allowance
+    /// for both tokens. Call-sites 1 and 2 for verify_balance_and_allowance.
+    pub fn provide_liquidity(env: Env, user: Address, amount_a: i128, amount_b: i128) {
+        user.require_auth();
+        Self::require_not_frozen(&env, &user);
         let mut state: PoolState = env.storage().instance().get(&DataKey::State).expect("Not initialized");
+        if state.deposits_paused {
+            panic!("deposits are paused");
+        }
+        Self::verify_balance_and_allowance(&env, &state.token_a, &user, amount_a);
+        Self::verify_balance_and_allowance(&env, &state.token_b, &user, amount_b);
         state.reserve_a = state.reserve_a.saturating_add(amount_a);
         state.reserve_b = state.reserve_b.saturating_add(amount_b);
         env.storage().instance().set(&DataKey::State, &state);
@@ -77,6 +106,80 @@ impl AmmPool {
     fn require_admin(env: &Env) {
         let admin: Address = env.storage().instance().get(&DataKey::Admin).expect("Not initialized");
         admin.require_auth();
+    }
+
+    /// Helper function to check if an address is frozen
+    fn is_address_frozen(env: &Env, address: &Address) -> bool {
+        env.storage()
+            .instance()
+            .get(&DataKey::FrozenAddress(address.clone()))
+            .unwrap_or(false)
+    }
+
+    /// Helper function to require address is not frozen
+    fn require_not_frozen(env: &Env, address: &Address) {
+        if Self::is_address_frozen(env, address) {
+            panic!("address is frozen");
+        }
+    }
+
+    /// Admin-only function to freeze or unfreeze a specific address.
+    /// When an address is frozen, it cannot execute swaps, provide liquidity, or remove liquidity.
+    /// This is an emergency measure for compliance and security against known malicious actors.
+    pub fn set_address_freeze_status(env: Env, address: Address, frozen: bool) {
+        Self::require_admin(&env);
+        env.storage()
+            .instance()
+            .set(&DataKey::FrozenAddress(address.clone()), &frozen);
+        
+        // Emit event for transparency
+        env.events().publish(
+            (symbol_short!("Freeze"), symbol_short!("Status")),
+            (address, frozen)
+        );
+    }
+
+    /// Query function to check if an address is currently frozen
+    pub fn is_frozen(env: Env, address: Address) -> bool {
+        Self::is_address_frozen(&env, &address)
+    }
+
+    /// Admin: pause or unpause new deposits and swaps into the pool.
+    /// When paused, provide_liquidity and swap will reject all calls,
+    /// but existing LPs can still withdraw via remove_liquidity.
+    pub fn set_deposits_paused(env: Env, paused: bool) {
+        Self::require_admin(&env);
+        let mut state: PoolState = env.storage().instance().get(&DataKey::State).expect("Not initialized");
+        state.deposits_paused = paused;
+        env.storage().instance().set(&DataKey::State, &state);
+    }
+
+    /// Admin: pause or unpause liquidity withdrawals from the pool.
+    /// When paused, remove_liquidity will reject all calls,
+    /// but new deposits can still enter via provide_liquidity.
+    pub fn set_withdrawals_paused(env: Env, paused: bool) {
+        Self::require_admin(&env);
+        let mut state: PoolState = env.storage().instance().get(&DataKey::State).expect("Not initialized");
+        state.withdrawals_paused = paused;
+        env.storage().instance().set(&DataKey::State, &state);
+    }
+
+    /// Verify that `user` holds at least `required_amount` of `token` and has granted
+    /// at least that much allowance to this contract. Panics early with a descriptive
+    /// message if either check fails. No-ops when `required_amount <= 0`.
+    fn verify_balance_and_allowance(env: &Env, token: &Address, user: &Address, required_amount: i128) {
+        if required_amount <= 0 {
+            return;
+        }
+        let client = token::Client::new(env, token);
+        let balance = client.balance(user);
+        if balance < required_amount {
+            panic!("insufficient balance");
+        }
+        let allowance = client.allowance(user, &env.current_contract_address());
+        if allowance < required_amount {
+            panic!("insufficient allowance");
+        }
     }
 
     /// Emergency eject liquidity - Admin only function to forcefully withdraw all liquidity
@@ -197,5 +300,54 @@ impl AmmPool {
         }
 
         output_native
+    }
+
+    /// Swap tokens: verify user balance/allowance for the input token (call-site 3),
+    /// then calculate and return the output amount using the constant-product formula.
+    /// Does not perform actual token transfers (out of scope for this feature).
+    pub fn swap(env: Env, user: Address, amount_in: i128, is_a_in: bool) -> i128 {
+        Self::require_not_frozen(&env, &user);
+        let state: PoolState = env.storage().instance().get(&DataKey::State).expect("Not initialized");
+        if state.deposits_paused {
+            panic!("deposits are paused");
+        }
+        let input_token = if is_a_in { &state.token_a } else { &state.token_b };
+        Self::verify_balance_and_allowance(&env, input_token, &user, amount_in);
+        Self::calculate_amount_out(env, amount_in, is_a_in)
+    }
+
+    /// Remove liquidity from the pool, returning underlying tokens to the user.
+    /// Withdrawals are permitted even when deposits are paused, allowing LPs to
+    /// rescue funds during an emergency. Only a separate withdrawals_paused flag
+    /// (set by admin) can block this function.
+    pub fn remove_liquidity(env: Env, user: Address, amount_a: i128, amount_b: i128) {
+        user.require_auth();
+        Self::require_not_frozen(&env, &user);
+        let mut state: PoolState = env.storage().instance().get(&DataKey::State).expect("Not initialized");
+        if state.withdrawals_paused {
+            panic!("withdrawals are paused");
+        }
+        if amount_a < 0 || amount_b < 0 {
+            panic!("amounts must be non-negative");
+        }
+        if state.reserve_a < amount_a || state.reserve_b < amount_b {
+            panic!("insufficient reserves");
+        }
+        state.reserve_a -= amount_a;
+        state.reserve_b -= amount_b;
+        env.storage().instance().set(&DataKey::State, &state);
+    }
+
+    /// Read the current pool reserve ratio (reserve_a / reserve_b) scaled by 10^7.
+    pub fn get_spot_price(env: Env) -> u128 {        let state: PoolState = env.storage().instance().get(&DataKey::State).expect("Not initialized");
+        
+        if state.reserve_b == 0 {
+            panic!("reserve_b is zero");
+        }
+
+        let reserve_a = state.reserve_a as u128;
+        let reserve_b = state.reserve_b as u128;
+
+        reserve_a.saturating_mul(10_000_000) / reserve_b
     }
 }
