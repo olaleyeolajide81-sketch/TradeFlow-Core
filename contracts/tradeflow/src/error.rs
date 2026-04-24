@@ -39,6 +39,8 @@ pub enum TradeFlowError {
     InsufficientBalance = 17,
     /// Slippage exceeded during swap
     SlippageExceeded = 18,
+    /// Contract is already initialized
+    AlreadyInitialized = 19,
 }
 
 impl TradeFlowError {
@@ -59,6 +61,7 @@ impl TradeFlowError {
             TradeFlowError::InvalidPermitSignature => "Invalid permit signature",
             TradeFlowError::FlashLoanActive => "Flash loan is currently active - pool operations are locked",
             TradeFlowError::TradeSizeExceedsMaximum => "Trade size exceeds maximum allowed percentage",
+            TradeFlowError::AlreadyInitialized => "Contract already initialized",
         }
     }
 }
