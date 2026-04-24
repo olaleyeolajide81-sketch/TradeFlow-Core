@@ -4,35 +4,41 @@ use soroban_sdk::contracttype;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Error {
     /// Token allowance is insufficient for the requested transfer amount
-    InsufficientAllowance,
+    InsufficientAllowance = 1,
     /// Contract has not been initialized
-    NotInitialized,
+    NotInitialized = 2,
     /// Invalid token address provided
-    InvalidTokenAddress,
+    InvalidTokenAddress = 3,
     /// Insufficient liquidity in the pool
-    InsufficientLiquidity,
+    InsufficientLiquidity = 4,
     /// Slippage protection triggered - output amount too low
-    InsufficientOutputAmount,
+    InsufficientOutputAmount = 5,
     /// Received fewer liquidity shares than minimum expected
-    InsufficientSharesReceived,
+    InsufficientSharesReceived = 6,
     /// Fee exceeds maximum allowed (10000 basis points = 100%)
-    FeeTooHigh,
+    FeeTooHigh = 7,
     /// Timelock period has not elapsed yet
-    TimelockNotElapsed,
+    TimelockNotElapsed = 8,
     /// No pending fee change found
-    NoPendingFeeChange,
+    NoPendingFeeChange = 9,
     /// Permit signature has expired
-    PermitExpired,
+    PermitExpired = 10,
     /// Permit owner mismatch
-    PermitOwnerMismatch,
+    PermitOwnerMismatch = 11,
     /// Invalid nonce in permit
-    InvalidNonce,
+    InvalidNonce = 12,
     /// Invalid permit signature
-    InvalidPermitSignature,
+    InvalidPermitSignature = 13,
     /// Flash loan is currently active - pool is locked
-    FlashLoanActive,
+    FlashLoanActive = 14,
     /// Trade size exceeds maximum allowed percentage
-    TradeSizeExceedsMaximum,
+    TradeSizeExceedsMaximum = 15,
+    /// Factory is paused - all operations halted
+    FactoryPaused = 16,
+    /// Insufficient balance for requested operation
+    InsufficientBalance = 17,
+    /// Slippage exceeded during swap
+    SlippageExceeded = 18,
 }
 
 impl Error {
@@ -53,6 +59,9 @@ impl Error {
             Error::InvalidPermitSignature => "Invalid permit signature",
             Error::FlashLoanActive => "Flash loan is currently active - pool operations are locked",
             Error::TradeSizeExceedsMaximum => "Trade size exceeds maximum allowed percentage",
+            Error::FactoryPaused => "Factory is paused - all operations are halted",
+            Error::InsufficientBalance => "Insufficient balance for requested operation",
+            Error::SlippageExceeded => "Slippage exceeded during swap",
         }
     }
 }

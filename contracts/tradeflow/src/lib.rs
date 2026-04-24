@@ -55,6 +55,7 @@ pub enum DataKey {
     MaxTradePercentage, // Maximum trade size as percentage of pool reserves
     FeeRecipient, // Address that receives protocol fees
     FlashLoanActive, // Flash loan reentrancy lock
+    FactoryPaused, // Factory-level emergency pause state
 }
 
 #[contract]
@@ -83,6 +84,7 @@ impl TradeFlow {
         env.storage().instance().set(&DataKey::MaxTradePercentage, &10u32); // Default 10%
         env.storage().instance().set(&DataKey::FeeRecipient, &admin); // Default to admin
         env.storage().instance().set(&DataKey::FlashLoanActive, &false);
+        env.storage().instance().set(&DataKey::FactoryPaused, &false);
         
         env.events().publish(
             (Symbol::new(&env, "initialized"), admin),
@@ -95,6 +97,15 @@ impl TradeFlow {
         let admin: Address = env.storage().instance().get(&DataKey::Admin)
             .expect("Not initialized");
         admin.require_auth();
+    }
+
+    // Helper function to check if factory is active
+    fn require_factory_active(env: &Env) {
+        let factory_paused: bool = env.storage().instance().get(&DataKey::FactoryPaused)
+            .unwrap_or(false);
+        if factory_paused {
+            check_and_panic_error(Error::FactoryPaused);
+        }
     }
 
     // Helper function to check token allowance
@@ -208,6 +219,66 @@ impl TradeFlow {
         );
     }
 
+    // SET FACTORY PAUSE STATE: Admin function to pause/unpause the entire factory
+    pub fn set_factory_pause_state(env: Env, state: bool) {
+        Self::require_admin(&env);
+
+        let old_state: bool = env.storage().instance().get(&DataKey::FactoryPaused)
+            .unwrap_or(false);
+        
+        env.storage().instance().set(&DataKey::FactoryPaused, &state);
+
+        env.events().publish(
+            (Symbol::new(&env, "factory_pause_state_changed"), old_state),
+            state
+        );
+    }
+
+    // GET FACTORY PAUSE STATE: Get current factory pause state
+    pub fn get_factory_pause_state(env: Env) -> bool {
+        env.storage().instance().get(&DataKey::FactoryPaused)
+            .unwrap_or(false)
+    }
+
+    // SWEEP TOKENS: Admin function to rescue accidentally transferred tokens
+    pub fn sweep_tokens(env: Env, token: Address, to: Address) {
+        Self::require_admin(&env);
+
+        // Get the token addresses from the pool
+        let token_a: Address = env.storage().instance().get(&DataKey::TokenA)
+            .expect("Not initialized");
+        let token_b: Address = env.storage().instance().get(&DataKey::TokenB)
+            .expect("Not initialized");
+
+        // Verify the token is one of the pool tokens
+        if token != token_a && token != token_b {
+            check_and_panic_error(Error::InvalidTokenAddress);
+        }
+
+        // Get the mathematical reserve from pool state
+        let (reserve_a, reserve_b) = Self::get_reserves(&env);
+        let reserve_amount = if token == token_a { reserve_a } else { reserve_b };
+
+        // Get the actual contract balance
+        let token_client = token::Client::new(&env, &token);
+        let actual_balance = token_client.balance(&env.current_contract_address()) as u128;
+
+        // Calculate the difference (actual_balance - reserve)
+        if actual_balance <= reserve_amount {
+            check_and_panic_error(Error::InsufficientBalance);
+        }
+
+        let sweep_amount = actual_balance - reserve_amount;
+
+        // Transfer the excess tokens to the specified recovery address
+        token_client.transfer(&env.current_contract_address(), &to, &(sweep_amount as i128));
+
+        env.events().publish(
+            (Symbol::new(&env, "tokens_swept"), token.clone()),
+            (to, sweep_amount)
+        );
+    }
+
     // GET MAX TRADE SIZE: Get current maximum trade percentage
     pub fn get_max_trade_size(env: Env) -> u32 {
         env.storage().instance().get(&DataKey::MaxTradePercentage)
@@ -254,6 +325,9 @@ impl TradeFlow {
         permit_data: PermitData,
         signature: BytesN<64>
     ) {
+        // Check if factory is active
+        Self::require_factory_active(&env);
+        
         let current_time = env.ledger().timestamp();
         
         if current_time > permit_data.deadline {
@@ -289,6 +363,9 @@ impl TradeFlow {
         token_b_amount: u128,
         min_shares: u128
     ) -> u128 {
+        // Check if factory is active
+        Self::require_factory_active(&env);
+        
         // Check flash loan reentrancy lock
         let flash_loan_active: bool = env.storage().temporary().get(&DataKey::FlashLoanActive)
             .unwrap_or(false);
@@ -382,6 +459,9 @@ impl TradeFlow {
         amount_in: u128,
         amount_out_min: u128
     ) -> u128 {
+        // Check if factory is active
+        Self::require_factory_active(&env);
+        
         // Check flash loan reentrancy lock
         let flash_loan_active: bool = env.storage().temporary().get(&DataKey::FlashLoanActive)
             .unwrap_or(false);
@@ -500,6 +580,54 @@ impl TradeFlow {
         amount_out
     }
 
+    // ESTIMATE LP TOKENS: View function to estimate LP tokens for a deposit
+    pub fn estimate_lp_tokens(env: Env, amount_a: u128, amount_b: u128) -> u128 {
+        let (reserve_a, reserve_b) = Self::get_reserves(&env);
+        let total_liquidity: u128 = env.storage().instance().get(&DataKey::TotalLiquidity)
+            .unwrap_or(0u128);
+
+        if total_liquidity == 0 {
+            // First liquidity provider - use geometric mean formula
+            // Since we don't have sqrt, use approximation: sqrt(amount_a * amount_b)
+            let product = fixed_point::mul_div_down(&env, amount_a, amount_b, 1u128);
+            if product == 0 { 
+                1000 // Minimum shares for first deposit
+            } else { 
+                // Simple approximation of square root using division
+                // This is a conservative estimate for the geometric mean
+                let min_amount = amount_a.min(amount_b);
+                let max_amount = amount_a.max(amount_b);
+                if max_amount == 0 { 1000 } else {
+                    fixed_point::mul_div_down(&env, min_amount, min_amount, max_amount)
+                }
+            }
+        } else {
+            // Proportional share formula for subsequent deposits
+            // Calculate shares based on the ratio of input amounts to existing reserves
+            let shares_a = if reserve_a > 0 {
+                fixed_point::mul_div_up(&env, amount_a, total_liquidity, reserve_a)
+            } else {
+                0
+            };
+            let shares_b = if reserve_b > 0 {
+                fixed_point::mul_div_up(&env, amount_b, total_liquidity, reserve_b)
+            } else {
+                0
+            };
+            
+            // Return the minimum of the two calculations to ensure proper ratio
+            if shares_a == 0 && shares_b == 0 {
+                0
+            } else if shares_a == 0 {
+                shares_b
+            } else if shares_b == 0 {
+                shares_a
+            } else {
+                shares_a.min(shares_b)
+            }
+        }
+    }
+
     // GET RESERVES: Get current token reserves
     pub fn get_reserves(env: &Env) -> (u128, u128) {
         let reserve_a: u128 = env.storage().instance().get(&DataKey::ReserveA)
@@ -536,6 +664,9 @@ impl TradeFlow {
         callback: Address,
         _callback_data: Bytes
     ) {
+        // Check if factory is active
+        Self::require_factory_active(&env);
+        
         // Check if token is valid
         let token_a: Address = env.storage().instance().get(&DataKey::TokenA)
             .expect("Not initialized");
