@@ -1,6 +1,10 @@
 #![no_std]
 use soroban_sdk::{contract, contracterror, contractimpl, contracttype, token, Address, Env, BytesN, Bytes, symbol_short, Symbol, vec, Val, panic_with_error, IntoVal};
 
+pub mod flash_loan_receiver;
+pub use flash_loan_receiver::FlashLoanReceiver;
+
+
 #[cfg(test)]
 mod tests;
 
@@ -412,21 +416,17 @@ impl LendingPool {
     }
 
     /// Executes a flash loan, transferring `amount` to `receiver` and expecting
-    /// `amount + calculate_flash_fee(amount)` to be returned.
+    /// `amount + calculate_flash_fee(amount)` to be returned before callback returns.
     /// 
     /// # Flash Loan Fee & LP Share Value
-    /// A fee of 0.08% (8 bps) is charged on the borrowed amount.
-    /// Collected fees remain in the pool's reserves (the contract's token balance).
-    /// Because the pool balance increases while the total minted LP shares remain 
-    /// constant during this operation, the intrinsic value of all LP shares 
-    /// automatically increases, directly compensating Liquidity Providers for 
-    /// the temporary risk exposure.
+    /// A fee of 0.08% (8 bps) is charged. Fees stay in pool reserves, increasing LP share value.
     /// 
     /// # Callback Interface
-    /// The receiver contract must implement:
-    /// `flash_cb(amount: i128, fee: i128, params: Bytes)`
-    /// and must approve/transfer `amount + fee` back to the pool before returning.
+    /// Receiver must implement [`FlashLoanReceiver`] trait:
+    /// `execute_operation(env: Env, amount: i128, fee: i128, params: Bytes)`
+    /// Must repay via token.transfer before returning, else entire tx reverts.
     pub fn flash_loan(env: Env, receiver: Address, amount: i128, params: Bytes) {
+
         Self::check_paused(&env);
         
         if amount <= 0 {
@@ -447,10 +447,11 @@ impl LendingPool {
         // Transfer funds to receiver
         client.transfer(&env.current_contract_address(), &receiver, &amount);
 
-        // Invoke the receiver's callback.
-        // The receiver must implement `flash_cb(amount: i128, fee: i128, params: Bytes)`
+        // Invoke the receiver's callback via standard FlashLoanReceiver trait.
+        // The receiver must implement `execute_operation(amount: i128, fee: i128, params: Bytes)`
         let args = vec![&env, amount.into_val(&env), fee.into_val(&env), params.into_val(&env)];
-        let _res: Val = env.invoke_contract(&receiver, &Symbol::new(&env, "flash_cb"), args);
+        let _res: Val = env.invoke_contract(&receiver, &Symbol::new(&env, "execute_operation"), args);
+
 
         // Verify repayment (borrowed_amount + calculated_fee)
         let final_balance = client.balance(&env.current_contract_address());

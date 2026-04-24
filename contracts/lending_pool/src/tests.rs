@@ -1,7 +1,8 @@
 #[cfg(test)]
 mod tests {
-    use soroban_sdk::{Address, Env, token, testutils::{Ledger, Address as _}};
-    use crate::LendingPoolClient;
+use soroban_sdk::{Address, Env, token, testutils::{Ledger, Address as _}, Symbol};
+use crate::LendingPoolClient;
+use crate::mock_flash_receiver::MockFlashReceiverClient;
 
     #[test]
     fn test_initialization() {
@@ -333,4 +334,50 @@ mod tests {
         // Will fail with EmptyPool because the token mock has 0 balance
         client.swap(&user, &100);
     }
+
+    #[test]
+    fn test_flash_loan_success() {
+        let env = Env::default();
+        let pool_id = env.register(crate::LendingPool, ());
+        let pool_client = crate::LendingPoolClient::new(&env, &pool_id);
+
+        let admin = Address::generate(&env);
+        let token_id = env.register_stellar_asset_contract_v2(admin.clone());
+        let token_address = token_id.address();
+        let token_client = token::StellarAssetClient::new(&env, &token_address);
+        pool_client.init(&admin, &token_address);
+
+        // Deploy mock receiver
+        let receiver_id = env.register(crate::mock_flash_receiver::MockFlashReceiver, ());
+        let receiver_client = crate::mock_flash_receiver::MockFlashReceiverClient::new(&env, &receiver_id);
+        receiver_client.init(&pool_id, &token_address);
+
+        // Fund pool
+        let deposit_amount = 10000i128;
+        token_client.mint(&pool_id, &deposit_amount);
+        let initial_pool_balance = token_client.balance(&pool_id);
+        assert_eq!(initial_pool_balance, deposit_amount);
+
+        // Fund receiver for fee
+        let fee = pool_client.calculate_flash_fee(&5000);
+        let loan_amount = 5000i128;
+        token_client.mint(&receiver_id, &(loan_amount + fee));
+
+        // Execute flash loan
+        let params = soroban_sdk::Bytes::from_slice(&env, b"test params");
+        env.mock_all_auths();
+        pool_client.flash_loan(&receiver_id, &loan_amount, &params);
+
+        // Verify repayment
+        let final_pool_balance = token_client.balance(&pool_id);
+        let expected_balance = initial_pool_balance + fee;
+        assert_eq!(final_pool_balance, expected_balance);
+
+        // Check event emitted
+        let events = env.events().all();
+        assert!(events.iter().any(|e| e.topics[0] == soroban_sdk::Symbol::new(&env, "flash_loan")));
+    }
 }
+
+use crate::mock_flash_receiver;
+
