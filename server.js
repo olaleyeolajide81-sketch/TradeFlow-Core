@@ -1,13 +1,12 @@
 const express = require('express');
 const helmet = require('helmet');
 const cors = require('cors');
-const { verifyApiKey } = require('./utils/auth');
 
 require('dotenv').config();
 
 const app = express();
 
-// Startup validation for required .env variables (#25)
+// Startup validation for required .env variables
 if (!process.env.PORT) {
     console.warn('Warning: PORT is not defined in .env file. Falling back to default port 3000.');
 }
@@ -24,7 +23,7 @@ const transactions = Array.from({ length: 100 }, (_, i) => ({
     type: i % 2 === 0 ? 'deposit' : 'withdrawal',
     amount: (Math.random() * 10000).toFixed(2),
     currency: 'USDC',
-    timestamp: new Date(Date.now() - i * 3600000).toISOString(), // 1 hour apart
+    timestamp: new Date(Date.now() - i * 3600000).toISOString(),
     status: 'completed'
 }));
 
@@ -33,7 +32,7 @@ app.get('/health', (req, res) => {
     res.json({ status: 'ok', timestamp: Date.now() });
 });
 
-// Contract info (from README_SERVER.md)
+// Contract info
 app.get('/api/contracts', (req, res) => {
     res.json({
         invoice_nft: process.env.INVOICE_NFT_ID || 'CCYU3LOQI34VHVN3ZOSEBHHKL4YK36FMTOEGLRYDUDRGS7JOLLRKCEQM',
@@ -41,44 +40,27 @@ app.get('/api/contracts', (req, res) => {
     });
 });
 
-// Transactions endpoint with actual pagination logic (Issue #35)
+// Transactions endpoint with pagination
 app.get('/api/transactions', (req, res) => {
-    // 1. Parse page and limit from query parameters (default to page 1, limit 10)
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 10;
 
-    // 2. Calculate startIndex and endIndex
     const startIndex = (page - 1) * limit;
     const endIndex = page * limit;
 
-    // 3. Slice the array to get the requested chunk
     const paginatedData = transactions.slice(startIndex, endIndex);
 
     res.json({
-        data: paginatedData,
         page,
         limit,
-        totalCount: transactions.length,
-        totalPages: Math.ceil(transactions.length / limit)
+        total: transactions.length,
+        data: paginatedData
     });
 });
 
-// Mock routes for CI validation
-app.get('/api/v1/version', (req, res) => {
-    res.json({ version: '1.0.0', api: 'v1' });
-});
-
-app.get('/api/v1/prices', (req, res) => {
-    res.json({ USDC: 1.00, XLM: 0.12 });
-});
-
-app.get('/api/v1/test', (req, res) => {
-    res.json({ status: 'test successful' });
-});
-
-// Global 404 Not Found handler
+// Global 404 Not Found handler (FIXED)
 app.use((req, res) => {
-    res.status(404).json({ "error": "Route not found" });
+    res.status(404).json({ error: "Route not found" });
 });
 
 app.listen(port, () => {
