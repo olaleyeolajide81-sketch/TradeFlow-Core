@@ -158,6 +158,7 @@ pub enum DataKey {
     FeeRecipient,
     FlashLoanActive,
     UpgradeConfig,
+    IsInitialized,
 }
 
 #[contract]
@@ -167,8 +168,8 @@ pub struct TradeFlow;
 impl TradeFlow {
     // Initialize the AMM with token addresses and admin
     pub fn init(env: Env, admin: Address, token_a: Address, token_b: Address, initial_fee: u32) {
-        if env.storage().instance().has(&DataKey::Admin) {
-            panic!("Already initialized");
+        if env.storage().instance().has(&DataKey::IsInitialized) {
+            check_and_panic_error(TradeFlowError::AlreadyInitialized);
         }
         
         if initial_fee > 10000 {
@@ -217,6 +218,9 @@ impl TradeFlow {
         
         // Initialize reentrancy status to 1 (NOT_ENTERED) (#108)
         env.storage().instance().set(&DataKey::ReentrancyStatus, &1u32);
+
+        // Mark as initialized (#73)
+        env.storage().instance().set(&DataKey::IsInitialized, &true);
         
         env.events().publish(
             (Symbol::new(&env, "initialized"), admin),

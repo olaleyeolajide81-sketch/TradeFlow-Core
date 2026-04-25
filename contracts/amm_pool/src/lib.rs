@@ -308,6 +308,45 @@ impl AmmPool {
         output_native
     }
 
+    /// Calculate the input amount required for a given output amount (Exact Output).
+    ///
+    /// # Formula:
+    /// numerator = reserve_in * amount_out * 1000
+    /// denominator = (reserve_out - amount_out) * 997
+    /// amount_in = (numerator / denominator) + 1 (to round up)
+    ///
+    /// # Arguments:
+    /// * `amount_out` - The desired output amount.
+    /// * `reserve_in` - Current reserve of the input token.
+    /// * `reserve_out` - Current reserve of the output token.
+    ///
+    /// # Returns:
+    /// The calculated amount_in required to receive the desired amount_out.
+    pub fn calculate_amount_in(
+        _env: Env,
+        amount_out: i128,
+        reserve_in: i128,
+        reserve_out: i128,
+    ) -> i128 {
+        if amount_out <= 0 || reserve_in <= 0 || reserve_out <= 0 {
+            return 0;
+        }
+        if amount_out >= reserve_out {
+            panic!("Insufficient liquidity for requested output");
+        }
+
+        let numerator = reserve_in
+            .saturating_mul(amount_out)
+            .saturating_mul(1000);
+        let denominator = (reserve_out.saturating_sub(amount_out))
+            .saturating_mul(997);
+
+        // Ceiling division: (numerator + denominator - 1) / denominator
+        let amount_in = (numerator.saturating_add(denominator).saturating_sub(1)) / denominator;
+        
+        amount_in
+    }
+
     /// Swap tokens: verify user balance/allowance for the input token (call-site 3),
     /// then calculate and return the output amount using the constant-product formula.
     /// Does not perform actual token transfers (out of scope for this feature).

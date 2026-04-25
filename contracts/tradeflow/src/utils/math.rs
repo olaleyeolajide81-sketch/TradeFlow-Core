@@ -218,3 +218,39 @@ mod tests {
         assert!(fee_90 < fee_95);
     }
 }
+
+/// Calculates the discounted protocol fee based on the user's holding tier.
+/// 
+/// This is a scaffold for the future TradeFlow token governance integration.
+/// Users holding >10,000 TF tokens will qualify for higher tiers.
+/// 
+/// # Parameters
+/// - `base_fee`: The initial protocol fee (e.g., 30 for 0.3%)
+/// - `user_tier`: Mock tier level (0 = Bronze, 1 = Silver, 2 = Gold)
+/// 
+/// # Returns
+/// The discounted fee in basis points.
+pub fn calculate_discounted_fee(base_fee: u32, user_tier: u32) -> u32 {
+    // Mock tiers:
+    // 0: Bronze - 0% discount
+    // 1: Silver - 15% discount
+    // 2: Gold   - 30% discount
+    
+    // FUTURE: Inject contract call here to check TF token balance:
+    // let tf_balance = env.invoke_contract(&tf_token_address, &Symbol::new(env, "balance"), vec![user_address]);
+    // Then map tf_balance to tier.
+
+    match user_tier {
+        1 => {
+            // Silver: 15% discount
+            // (base_fee * 85) / 100
+            (base_fee * 85) / 100
+        },
+        2 => {
+            // Gold: 30% discount
+            // (base_fee * 70) / 100
+            (base_fee * 70) / 100
+        },
+        _ => base_fee, // Bronze or default: no discount
+    }
+}
