@@ -4,7 +4,8 @@ members = [
     "contracts/invoice_nft",
     "contracts/lending_pool",
     "contracts/tradeflow",
-    "contracts/amm_pool"
+    "contracts/amm_pool",
+    "contracts/amm_factory"
 ]
 
 [profile.release]

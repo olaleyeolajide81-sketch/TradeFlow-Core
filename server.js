@@ -5,7 +5,7 @@ require('dotenv').config();
 
 const app = express();
 
-// Startup validation for required .env variables (#25)
+// Startup validation for required .env variables
 if (!process.env.PORT) {
     console.warn('Warning: PORT is not defined in .env file. Falling back to default port 3000.');
 }
@@ -78,9 +78,9 @@ app.get('/api/transactions', (req, res) => {
     });
 });
 
-// Global 404 Not Found handler
-app.use('*', (req, res) => {
-    res.status(404).json({ error: 'Route not found' });
+// Global 404 Not Found handler (FIXED)
+app.use((req, res) => {
+    res.status(404).json({ error: "Route not found" });
 });
 
 app.listen(port, () => {

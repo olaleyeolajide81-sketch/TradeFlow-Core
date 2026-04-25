@@ -2,7 +2,7 @@
 
 ## Overview
 
-The TradeFlow protocol now includes a sophisticated buyback and burn mechanism that uses collected protocol fees to market-buy TF governance tokens and permanently burn them, creating constant deflationary pressure on the token supply.
+The TradeFlow protocol now includes a sophisticated buyback and burn mechanism that uses collected protocol fees to market-buy TF governance tokens and permanently burn them, creating constant pressure on the token supply.
 
 ## Architecture
 

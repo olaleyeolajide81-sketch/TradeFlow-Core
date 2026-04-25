@@ -16,6 +16,16 @@ pub struct Pool {
     pub paused: bool,
 }
 
+#[cfg(test)]
+mod tests;
+
+const MINIMUM_LIQUIDITY: u128 = 1000;
+
+const BURN_ADDRESS: &str = "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF";
+
+
+
+// Data keys for contract storage
 #[contracttype]
 pub enum DataKey {
     FeeTo,        // The address that receives protocol fees

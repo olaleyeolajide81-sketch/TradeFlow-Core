@@ -1,5 +1,9 @@
 #![no_std]
-use soroban_sdk::{contract, contracterror, contractimpl, contracttype, token, Address, Env, BytesN, Bytes, symbol_short, Symbol, vec, Val, panic_with_error};
+use soroban_sdk::{contract, contracterror, contractimpl, contracttype, token, Address, Env, BytesN, Bytes, symbol_short, Symbol, vec, Val, panic_with_error, IntoVal};
+
+pub mod flash_loan_receiver;
+pub use flash_loan_receiver::FlashLoanReceiver;
+
 
 #[cfg(test)]
 mod tests;
@@ -150,7 +154,7 @@ impl LendingPool {
                 panic_with_error!(&env, Error::Unauthorized);
             }
             // Extend TTL for the whitelist entry on access
-            env.storage().persistent().extend_ttl(&DataKey::Whitelisted(from), 535_680, 535_680);
+            env.storage().persistent().extend_ttl(&DataKey::Whitelisted(from.clone()), 535_680, 535_680);
         }
 
         let token_addr: Address = env.storage().instance().get(&DataKey::TokenAddress)
@@ -212,7 +216,7 @@ impl LendingPool {
 
     // Legacy borrow function mapped to swap logic for compatibility
     pub fn borrow(env: Env, borrower: Address, amount: i128) {
-        Self::swap(env, borrower, amount)
+        Self::swap(env.clone(), borrower, amount)
             .unwrap_or_else(|e| panic_with_error!(&env, e));
     }
 
@@ -287,7 +291,7 @@ impl LendingPool {
         env.storage().instance().set(&DataKey::LoanId, &loan_id);
         Self::extend_instance_ttl(&env);
 
-        env.events().publish((symbol_short!("loan_create"), borrower), loan_id);
+        env.events().publish((Symbol::new(&env, "loan_create"), borrower), loan_id);
         loan_id
     }
 
@@ -337,7 +341,7 @@ impl LendingPool {
 
         // In a real implementation, we would transfer the NFT back to the borrower
         // For now, we just emit an event
-        env.events().publish((symbol_short!("loan_repaid"), loan.borrower), loan_id);
+        env.events().publish((Symbol::new(&env, "loan_repaid"), loan.borrower), loan_id);
     }
 
     // LIQUIDATE: Liquidate a defaulted loan
@@ -376,7 +380,7 @@ impl LendingPool {
         Self::extend_instance_ttl(&env);
 
         // In a real implementation, we would transfer the NFT to the liquidator
-        env.events().publish((symbol_short!("loan_liquid"), liquidator), loan_id);
+        env.events().publish((Symbol::new(&env, "loan_liquid"), liquidator), loan_id);
     }
 
     // GET LOAN: Retrieve loan details
@@ -412,21 +416,17 @@ impl LendingPool {
     }
 
     /// Executes a flash loan, transferring `amount` to `receiver` and expecting
-    /// `amount + calculate_flash_fee(amount)` to be returned.
+    /// `amount + calculate_flash_fee(amount)` to be returned before callback returns.
     /// 
     /// # Flash Loan Fee & LP Share Value
-    /// A fee of 0.08% (8 bps) is charged on the borrowed amount.
-    /// Collected fees remain in the pool's reserves (the contract's token balance).
-    /// Because the pool balance increases while the total minted LP shares remain 
-    /// constant during this operation, the intrinsic value of all LP shares 
-    /// automatically increases, directly compensating Liquidity Providers for 
-    /// the temporary risk exposure.
+    /// A fee of 0.08% (8 bps) is charged. Fees stay in pool reserves, increasing LP share value.
     /// 
     /// # Callback Interface
-    /// The receiver contract must implement:
-    /// `flash_cb(amount: i128, fee: i128, params: Bytes)`
-    /// and must approve/transfer `amount + fee` back to the pool before returning.
+    /// Receiver must implement [`FlashLoanReceiver`] trait:
+    /// `execute_operation(env: Env, amount: i128, fee: i128, params: Bytes)`
+    /// Must repay via token.transfer before returning, else entire tx reverts.
     pub fn flash_loan(env: Env, receiver: Address, amount: i128, params: Bytes) {
+
         Self::check_paused(&env);
         
         if amount <= 0 {
@@ -447,10 +447,11 @@ impl LendingPool {
         // Transfer funds to receiver
         client.transfer(&env.current_contract_address(), &receiver, &amount);
 
-        // Invoke the receiver's callback.
-        // The receiver must implement `flash_cb(amount: i128, fee: i128, params: Bytes)`
+        // Invoke the receiver's callback via standard FlashLoanReceiver trait.
+        // The receiver must implement `execute_operation(amount: i128, fee: i128, params: Bytes)`
         let args = vec![&env, amount.into_val(&env), fee.into_val(&env), params.into_val(&env)];
-        let _res: Val = env.invoke_contract(&receiver, &Symbol::new(&env, "flash_cb"), args);
+        let _res: Val = env.invoke_contract(&receiver, &Symbol::new(&env, "execute_operation"), args);
+
 
         // Verify repayment (borrowed_amount + calculated_fee)
         let final_balance = client.balance(&env.current_contract_address());
@@ -462,7 +463,7 @@ impl LendingPool {
             panic_with_error!(&env, Error::InsufficientBalance);
         }
 
-        env.events().publish((symbol_short!("flash_loan"), receiver), (amount, fee));
+        env.events().publish((Symbol::new(&env, "flash_loan"), receiver), (amount, fee));
         Self::extend_instance_ttl(&env);
     }
 }

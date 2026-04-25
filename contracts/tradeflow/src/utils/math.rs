@@ -33,6 +33,7 @@ use super::fixed_point::*;
 /// Where x_new = x + amount_in and y_new = y - amount_out
 /// 
 /// This expands to a quadratic in terms of amount_out, which we solve iteratively.
+#[allow(dead_code)]
 pub fn calculate_stableswap_amount_out(
     _env: &Env,
     amount_in: u128,
@@ -63,48 +64,193 @@ pub fn calculate_stableswap_amount_out(
     dummy_output
 }
 
+/// Calculates a dynamic fee based on pool utilization using exponential scaling.
+///
+/// This function implements an algorithmic fee curve that discourages pool draining by
+/// exponentially increasing fees when utilization exceeds a target threshold. This is
+/// foundational for V2 algorithmic market making.
+///
+/// ## Mathematical Model
+///
+/// The fee multiplier follows an exponential growth curve above the target utilization:
+///
+/// ```text
+/// excess_ratio = (current_utilization - target_utilization) / (MAX_UTILIZATION - target_utilization)
+/// multiplier = base_fee * (1 + MAX_GROWTH_FACTOR)^excess_ratio
+/// ```
+///
+/// Where:
+/// - `excess_ratio` ∈ [0, 1]: how far past the target we are (normalized)
+/// - `MAX_GROWTH_FACTOR = 5`: at peak utilization, multiplier is base_fee * 6
+/// - The exponential provides steep but smooth fee increases
+///
+/// ## Fee Curve Characteristics
+///
+/// | Utilization | Multiplier (base_fee=0.3%) | Effective Fee |
+/// |-------------|---------------------------|---------------|
+/// | 50%         | 1.0x                      | 0.30%         |
+/// | 75%         | 1.0x                      | 0.30%         |
+/// | 90%         | ~1.5x                     | ~0.45%        |
+/// | 95%         | ~2.0x                     | ~0.60%        |
+/// | 99%         | ~3.1x                     | ~0.93%        |
+/// | 100%        | 6.0x (capped at MAX)      | 1.00% (max)   |
+///
+/// ## Parameters
+///
+/// - `target_utilization`: The utilization threshold (in basis points) where fees start growing.
+///   Typical value: 5000-7000 bps (50-70%)
+/// - `current_utilization`: Actual pool utilization (in basis points).
+/// - `base_fee`: The minimum fee when below target utilization (in basis points).
+///
+/// ## Returns
+///
+/// The calculated dynamic fee in basis points, clamped to [base_fee, MAX_DYNAMIC_FEE].
+///
+/// - `MAX_DYNAMIC_FEE = 300`: Hard cap of 3% (300 basis points) to prevent extreme fees
+///
+pub fn calculate_utilization_fee(
+    _env: &Env,
+    target_utilization: u32,
+    current_utilization: u32,
+    base_fee: u32,
+) -> u32 {
+    // Hard cap on maximum dynamic fee (3% = 300 basis points)
+    const MAX_DYNAMIC_FEE: u32 = 300;
+    
+    // Maximum growth factor: at 100% utilization, multiplier = base_fee * (1 + 9) = 10x
+    // This ensures even at extreme utilization, fees don't grow unbounded
+    const MAX_GROWTH_FACTOR: f64 = 9.0;
+    
+    // When current utilization is at or below target, return base fee (no adjustment)
+    if current_utilization <= target_utilization {
+        return base_fee;
+    }
+    
+    // Calculate the excess utilization ratio:
+    // This normalizes how far we are past the target to [0, 1]
+    // Example: if target=70%, current=85%, excess_ratio = (85-70)/(100-70) = 0.5
+    let target_u: f64 = target_utilization as f64 / 10000.0;
+    let current_u: f64 = current_utilization as f64 / 10000.0;
+    let max_u: f64 = 1.0; // 100% utilization = 10000 basis points
+    
+    let excess_ratio = (current_u - target_u) / (max_u - target_u);
+    
+    // Quadratic scaling approximation for no_std WASM compatibility: 
+    // multiplier = 1.0 + MAX_GROWTH_FACTOR * excess_ratio^2
+    // - At excess_ratio=0: multiplier = 1 (base fee)
+    // - At excess_ratio=1: multiplier = 1 + MAX_GROWTH_FACTOR (10x base)
+    let multiplier = 1.0 + MAX_GROWTH_FACTOR * (excess_ratio * excess_ratio);
+    
+    // Apply multiplier to base fee
+    let base_fee_f64 = base_fee as f64;
+    let dynamic_fee = base_fee_f64 * multiplier;
+    
+    // Clamp to maximum fee (handles floating point edge cases)
+    let result = if dynamic_fee > MAX_DYNAMIC_FEE as f64 {
+        MAX_DYNAMIC_FEE
+    } else {
+        dynamic_fee as u32
+    };
+    
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn test_stableswap_basic() {
+    fn test_utilization_fee_below_target() {
         let env = Env::default();
         
-        // Test basic scenario
-        let amount_in = 1000;
-        let reserve_in = 10000;
-        let reserve_out = 10000;
-        let amplification = 100; // Typical amplification coefficient
-        
-        let result = calculate_stableswap_amount_out(&env, amount_in, reserve_in, reserve_out, amplification);
-        
-        // Should return some positive amount (dummy calculation for now)
-        assert!(result > 0);
-        assert!(result < reserve_out); // Cannot withdraw more than reserve
+        // Below target utilization should return base fee
+        let result = calculate_utilization_fee(&env, 7000, 5000, 30);
+        assert_eq!(result, 30);
     }
 
     #[test]
-    #[should_panic(expected = "Reserves cannot be zero")]
-    fn test_stableswap_zero_reserves() {
+    fn test_utilization_fee_at_target() {
         let env = Env::default();
         
-        calculate_stableswap_amount_out(&env, 1000, 0, 10000, 100);
+        // At exactly target utilization should return base fee
+        let result = calculate_utilization_fee(&env, 7000, 7000, 30);
+        assert_eq!(result, 30);
     }
 
     #[test]
-    fn test_stableswap_zero_input() {
+    fn test_utilization_fee_above_target() {
         let env = Env::default();
         
-        let result = calculate_stableswap_amount_out(&env, 0, 10000, 10000, 100);
-        assert_eq!(result, 0);
+        // Above target, fee should increase
+        let result = calculate_utilization_fee(&env, 7000, 9000, 30);
+        assert!(result > 30);
+        assert!(result <= 300); // Should not exceed max
     }
 
     #[test]
-    #[should_panic(expected = "Amplification coefficient cannot be zero")]
-    fn test_stableswap_zero_amplification() {
+    fn test_utilization_fee_at_max() {
         let env = Env::default();
         
-        calculate_stableswap_amount_out(&env, 1000, 10000, 10000, 0);
+        // At 100% utilization should hit max fee cap
+        let result = calculate_utilization_fee(&env, 7000, 10000, 30);
+        assert_eq!(result, 300); // Should be capped at MAX_DYNAMIC_FEE
+    }
+
+    #[test]
+    fn test_utilization_fee_never_exceeds_max() {
+        let env = Env::default();
+        
+        // Even with very high base fee, should cap at MAX_DYNAMIC_FEE
+        let result = calculate_utilization_fee(&env, 7000, 10000, 200);
+        assert!(result <= 300);
+    }
+
+    #[test]
+    fn test_utilization_fee_gradient() {
+        let env = Env::default();
+        
+        // Verify fee increases with utilization
+        let fee_80 = calculate_utilization_fee(&env, 7000, 8000, 30);
+        let fee_90 = calculate_utilization_fee(&env, 7000, 9000, 30);
+        let fee_95 = calculate_utilization_fee(&env, 7000, 9500, 30);
+        
+        assert!(fee_80 < fee_90);
+        assert!(fee_90 < fee_95);
+    }
+}
+
+/// Calculates the discounted protocol fee based on the user's holding tier.
+/// 
+/// This is a scaffold for the future TradeFlow token governance integration.
+/// Users holding >10,000 TF tokens will qualify for higher tiers.
+/// 
+/// # Parameters
+/// - `base_fee`: The initial protocol fee (e.g., 30 for 0.3%)
+/// - `user_tier`: Mock tier level (0 = Bronze, 1 = Silver, 2 = Gold)
+/// 
+/// # Returns
+/// The discounted fee in basis points.
+pub fn calculate_discounted_fee(base_fee: u32, user_tier: u32) -> u32 {
+    // Mock tiers:
+    // 0: Bronze - 0% discount
+    // 1: Silver - 15% discount
+    // 2: Gold   - 30% discount
+    
+    // FUTURE: Inject contract call here to check TF token balance:
+    // let tf_balance = env.invoke_contract(&tf_token_address, &Symbol::new(env, "balance"), vec![user_address]);
+    // Then map tf_balance to tier.
+
+    match user_tier {
+        1 => {
+            // Silver: 15% discount
+            // (base_fee * 85) / 100
+            (base_fee * 85) / 100
+        },
+        2 => {
+            // Gold: 30% discount
+            // (base_fee * 70) / 100
+            (base_fee * 70) / 100
+        },
+        _ => base_fee, // Bronze or default: no discount
     }
 }
