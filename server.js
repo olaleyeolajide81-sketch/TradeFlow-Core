@@ -1,7 +1,6 @@
 const express = require('express');
 const helmet = require('helmet');
 const cors = require('cors');
-
 require('dotenv').config();
 
 const app = express();
@@ -10,7 +9,11 @@ const app = express();
 if (!process.env.PORT) {
     console.warn('Warning: PORT is not defined in .env file. Falling back to default port 3000.');
 }
+
 const port = process.env.PORT || 3000;
+
+// Contract version constant (#59)
+const CONTRACT_VERSION = process.env.CONTRACT_VERSION || '1.0.0';
 
 // Security and middleware
 app.use(helmet());
@@ -32,7 +35,26 @@ app.get('/health', (req, res) => {
     res.json({ status: 'ok', timestamp: Date.now() });
 });
 
-// Contract info
+// Version endpoint (#59)
+app.get('/api/v1/version', (req, res) => {
+    res.json({ version: CONTRACT_VERSION });
+});
+
+// Prices endpoint
+app.get('/api/v1/prices', (req, res) => {
+    res.json({
+        USDC: '1.00',
+        XLM: '0.11',
+        timestamp: Date.now()
+    });
+});
+
+// Rate limiting test endpoint
+app.get('/api/v1/test', (req, res) => {
+    res.json({ status: 'ok' });
+});
+
+// Contract info (from README_SERVER.md)
 app.get('/api/contracts', (req, res) => {
     res.json({
         invoice_nft: process.env.INVOICE_NFT_ID || 'CCYU3LOQI34VHVN3ZOSEBHHKL4YK36FMTOEGLRYDUDRGS7JOLLRKCEQM',
@@ -40,14 +62,12 @@ app.get('/api/contracts', (req, res) => {
     });
 });
 
-// Transactions endpoint with pagination
+// Transactions endpoint with pagination (Issue #35)
 app.get('/api/transactions', (req, res) => {
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 10;
-
     const startIndex = (page - 1) * limit;
     const endIndex = page * limit;
-
     const paginatedData = transactions.slice(startIndex, endIndex);
 
     res.json({
