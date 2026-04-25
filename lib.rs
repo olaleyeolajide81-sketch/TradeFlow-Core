@@ -1,8 +1,10 @@
 #![no_std]
 
-use soroban_sdk::{contract, contractimpl, contracttype, symbol_short, Address, Bytes, BytesN, Env, Map, Symbol, vec};
+use soroban_sdk::{contract, contractimpl, contracttype, symbol_short, Address, Bytes, BytesN, Env, Map, Symbol, String, vec};
 
 mod tests;
+
+const CONTRACT_VERSION: &str = "v1.0.0";
 
 #[contracttype]
 #[derive(Clone)]
@@ -16,10 +18,11 @@ pub struct Pool {
 
 #[contracttype]
 pub enum DataKey {
-    FeeTo, // The address that receives protocol fees
-    Pools, // Map of (TokenA, TokenB) -> Pool
+    FeeTo,        // The address that receives protocol fees
+    Pools,        // Map of (TokenA, TokenB) -> Pool
     PoolWasmHash, // The Wasm hash of the Pool contract to deploy
-    Admin, // The address of the factory admin
+    Admin,        // The address of the factory admin
+    Version,      // The contract version string
 }
 
 #[contract]
@@ -44,6 +47,18 @@ impl FactoryContract {
         env.storage().instance().set(&DataKey::FeeTo, &fee_to);
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::PoolWasmHash, &pool_wasm_hash);
+        env.storage().instance().set(&DataKey::Version, &String::from_str(&env, CONTRACT_VERSION));
+    }
+
+    /// Returns the current contract version string.
+    ///
+    /// # Returns
+    /// A string in Semantic Versioning format, e.g. "v1.0.0".
+    pub fn get_version(env: Env) -> String {
+        env.storage()
+            .instance()
+            .get(&DataKey::Version)
+            .unwrap_or_else(|| String::from_str(&env, CONTRACT_VERSION))
     }
 
     /// Helper function to sort two token addresses, creating a canonical pair
@@ -76,7 +91,7 @@ impl FactoryContract {
     /// `true` if a pool exists for the token pair, `false` otherwise.
     ///
     /// # Note
-    /// Token order doesn't matter - `pair_exists(A, B)` returns the same result as `pair_exists(B, A)`.
+    /// Token order does not matter - `pair_exists(A, B)` returns the same result as `pair_exists(B, A)`.
     pub fn pair_exists(env: Env, token_a: Address, token_b: Address) -> bool {
         let sorted_tokens = Self::sort_tokens(token_a, token_b);
         let pools: Map<(Address, Address), Pool> =
@@ -131,9 +146,9 @@ impl FactoryContract {
         let pool_address = env.deployer().with_current_contract(salt).deploy(wasm_hash);
 
         // Initialize the pool with the fee tier
-        let init_args = vec![&env, 
+        let init_args = vec![&env,
             env.current_contract_address().into_val(&env), // Factory as admin
-            token_0.clone().into_val(&env), 
+            token_0.clone().into_val(&env),
             token_1.clone().into_val(&env),
             fee_tier.into_val(&env)
         ];
@@ -164,7 +179,7 @@ impl FactoryContract {
         admin.require_auth();
 
         let old_fee_to: Address = env.storage().instance().get(&DataKey::FeeTo).unwrap();
-        
+
         env.storage().instance().set(&DataKey::FeeTo, &fee_to);
 
         // Emit event: ("Admin", "SetFeeTo", old_fee_to, new_fee_to)
@@ -174,13 +189,12 @@ impl FactoryContract {
         );
     }
 
-    /// Toggles the status of a specific pool.
+    /// Toggles the paused status of a specific pool.
     ///
     /// # Arguments
     /// * `env` - The Soroban environment.
     /// * `token_a` - The first token of the pair.
     /// * `token_b` - The second token of the pair.
-    /// * `status` - The new status (e.g., 0 = Paused, 1 = Active).
     pub fn toggle_pool_status(env: Env, token_a: Address, token_b: Address) {
         let admin: Address = env.storage().instance().get(&DataKey::Admin).expect("Not initialized");
         admin.require_auth();
@@ -190,10 +204,10 @@ impl FactoryContract {
             env.storage().instance().get(&DataKey::Pools).unwrap_or_else(|| Map::new(&env));
 
         let mut pool = pools.get(sorted_tokens.clone()).expect("Pool does not exist");
-        
+
         // Toggle the paused state
         pool.paused = !pool.paused;
-        
+
         // Invoke the pool contract to update its internal pause state
         let args = vec![&env, pool.paused.into()];
         env.invoke_contract::<()>(&pool.address, &Symbol::new(&env, "set_paused"), args);

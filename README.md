@@ -15,6 +15,62 @@ The system consists of multiple smart contracts:
 3.  **`factory`**: Factory contract for deploying liquidity pools with specific fee tiers.
 4.  **`amm_pool`**: Automated Market Maker pool contract with configurable fee tiers.
 
+---
+
+## 🔖 Contract Versioning
+
+TradeFlow-Core uses a hardcoded version string stored in instance storage to let frontends and indexers identify which contract version they are communicating with.
+
+### Version Format
+
+All versions follow [Semantic Versioning](https://semver.org/) (SemVer):
+
+```
+vMAJOR.MINOR.PATCH
+```
+
+| Segment | When to increment |
+| :--- | :--- |
+| **MAJOR** | Breaking change to the public API or storage layout |
+| **MINOR** | New functionality added in a backward-compatible way |
+| **PATCH** | Backward-compatible bug fixes |
+
+### Current Version
+
+```
+v1.0.0
+```
+
+### How It Works
+
+The version is defined as a compile-time constant and written to instance storage during `initialize_factory`. It can be read at any time using the public `get_version()` function.
+
+```rust
+// Reading the version on-chain (Rust test or cross-contract call)
+let version = factory_client.get_version();
+// Returns: "v1.0.0"
+```
+
+```bash
+# Reading the version via Stellar CLI
+stellar contract invoke \
+  --id <FACTORY_CONTRACT_ID> \
+  --network testnet \
+  -- get_version
+```
+
+### Upgrade Path
+
+When a new version is deployed, update the constant in `lib.rs` before building:
+
+```rust
+const CONTRACT_VERSION: &str = "v2.0.0";
+```
+
+Then rebuild and redeploy. The new `initialize_factory` call will store the updated string automatically.
+
+---
+
 ## 💰 Fee Tiers
 
 The Factory contract supports creating pools with different fee tiers to optimize for various token pair characteristics:
@@ -45,22 +101,22 @@ External developers can calculate the pool address locally using the token addre
 ```rust
 // Create a stablecoin pool with 0.05% fee
 let pool_address = factory.create_pool(
-    token_a, 
-    token_b, 
+    token_a,
+    token_b,
     5  // 5 basis points = 0.05%
 );
 
 // Create a standard pool with 0.30% fee
 let pool_address = factory.create_pool(
-    token_a, 
-    token_b, 
+    token_a,
+    token_b,
     30  // 30 basis points = 0.30%
 );
 
 // Create a volatile pool with 1.00% fee
 let pool_address = factory.create_pool(
-    token_a, 
-    token_b, 
+    token_a,
+    token_b,
     100  // 100 basis points = 1.00%
 );
 ```
@@ -71,7 +127,7 @@ let pool_address = factory.create_pool(
 
 To optimize for ledger rent costs and scalability, the protocol uses a tiered storage approach:
 
-- **Instance Storage**: Global configuration settings (Admin, Paused state) and counters (Loan IDs).
+- **Instance Storage**: Global configuration settings (Admin, Paused state, Version) and counters (Loan IDs).
 - **Persistent Storage**: High-cardinality user data (Loans, Invoices, Whitelists).
 - **Temporary Storage**: Used for transient data where applicable.
 
@@ -101,3 +157,4 @@ stellar contract build
 
 # Run the test suite
 cargo test
+```
