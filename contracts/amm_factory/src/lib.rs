@@ -151,6 +151,12 @@ impl FactoryContract {
         pools.set((token_0, token_1), pool);
         env.storage().instance().set(&DataKey::Pools, &pools);
 
+        // Emit PoolCreated event
+        env.events().publish(
+            (symbol_short!("PoolCreated"), token_a, token_b),
+            pool_address.clone()
+        );
+
         pool_address
     }
 
