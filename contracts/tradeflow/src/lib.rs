@@ -1,6 +1,6 @@
 #![no_std]
 
-use soroban_sdk::{contract, contractimpl, contracttype, symbol_short, Address, Bytes, BytesN, Env, Map, Symbol, String, vec};
+use soroban_sdk::{contract, contractimpl, contracttype, symbol_short, token, Address, Bytes, BytesN, Env, Map, Symbol, String, vec};
 
 mod tests;
 
@@ -228,21 +228,61 @@ impl TradeFlow {
             .unwrap_or(30)
     }
 
-    /// Get reserves
-    pub fn get_reserves(env: Env) -> (u128, u128) {
-        (1000, 1000) // Mock implementation
+    /// Get reserves using SAC token clients
+    pub fn get_reserves(env: Env, token_a: Address, token_b: Address) -> (u128, u128) {
+        let client_a = token::Client::new(&env, &token_a);
+        let client_b = token::Client::new(&env, &token_b);
+        let contract_address = env.current_contract_address();
+        
+        let reserve_a = client_a.balance(&contract_address) as u128;
+        let reserve_b = client_b.balance(&contract_address) as u128;
+        
+        (reserve_a, reserve_b)
     }
 
-    /// Provide liquidity
+    /// Provide liquidity with actual token transfers using SAC
     pub fn provide_liquidity(
         env: Env,
         user: Address,
+        token_a: Address,
+        token_b: Address,
         amount_a: u128,
         amount_b: u128,
         min_shares: u128,
     ) -> u128 {
         user.require_auth();
-        // Mock implementation
+        
+        // Create token clients for SAC interaction
+        let client_a = token::Client::new(&env, &token_a);
+        let client_b = token::Client::new(&env, &token_b);
+        
+        // Verify user balances and allowances
+        let balance_a = client_a.balance(&user);
+        let balance_b = client_b.balance(&user);
+        
+        if balance_a < amount_a as i128 {
+            panic!("Insufficient token_a balance");
+        }
+        if balance_b < amount_b as i128 {
+            panic!("Insufficient token_b balance");
+        }
+        
+        let contract_address = env.current_contract_address();
+        let allowance_a = client_a.allowance(&user, &contract_address);
+        let allowance_b = client_b.allowance(&user, &contract_address);
+        
+        if allowance_a < amount_a as i128 {
+            panic!("Insufficient token_a allowance");
+        }
+        if allowance_b < amount_b as i128 {
+            panic!("Insufficient token_b allowance");
+        }
+        
+        // Transfer tokens to contract
+        client_a.transfer(&user, &contract_address, &(amount_a as i128));
+        client_b.transfer(&user, &contract_address, &(amount_b as i128));
+        
+        // Return LP shares (simplified calculation)
         amount_a + amount_b
     }
 
@@ -255,26 +295,100 @@ impl TradeFlow {
         })
     }
 
-    /// Swap tokens
-    pub fn swap(env: Env, user: Address, token_in: Address, amount_in: u128, min_amount_out: u128) -> u128 {
+    /// Swap tokens with actual SAC transfers
+    pub fn swap(env: Env, user: Address, token_in: Address, token_out: Address, amount_in: u128, min_amount_out: u128) -> u128 {
         user.require_auth();
-        // Mock implementation
-        amount_in * 997 / 1000
+        
+        // Create token clients
+        let client_in = token::Client::new(&env, &token_in);
+        let client_out = token::Client::new(&env, &token_out);
+        
+        // Verify user balance and allowance
+        let balance_in = client_in.balance(&user);
+        if balance_in < amount_in as i128 {
+            panic!("Insufficient input token balance");
+        }
+        
+        let contract_address = env.current_contract_address();
+        let allowance_in = client_in.allowance(&user, &contract_address);
+        if allowance_in < amount_in as i128 {
+            panic!("Insufficient input token allowance");
+        }
+        
+        // Transfer input token to contract
+        client_in.transfer(&user, &contract_address, &(amount_in as i128));
+        
+        // Calculate output amount (0.3% fee)
+        let amount_out = amount_in * 997 / 1000;
+        
+        if amount_out < min_amount_out {
+            panic!("Insufficient output amount");
+        }
+        
+        // Check contract has enough output tokens
+        let contract_balance_out = client_out.balance(&contract_address);
+        if contract_balance_out < amount_out as i128 {
+            panic!("Insufficient liquidity");
+        }
+        
+        // Transfer output tokens to user
+        client_out.transfer(&contract_address, &user, &(amount_out as i128));
+        
+        amount_out
     }
 
-    /// Permit swap
+    /// Permit swap with EIP-2612-style permit and actual SAC transfers
     pub fn permit_swap(
         env: Env,
         user: Address,
         token_in: Address,
+        token_out: Address,
         amount_in: u128,
         min_amount_out: u128,
         permit_data: PermitData,
         signature: BytesN<64>,
     ) -> u128 {
         user.require_auth();
-        // Mock implementation
-        amount_in * 997 / 1000
+        
+        // TODO: Implement signature verification for permit_data
+        // For now, proceed with swap using SAC token clients
+        
+        // Create token clients
+        let client_in = token::Client::new(&env, &token_in);
+        let client_out = token::Client::new(&env, &token_out);
+        
+        // Verify user balance and allowance
+        let balance_in = client_in.balance(&user);
+        if balance_in < amount_in as i128 {
+            panic!("Insufficient input token balance");
+        }
+        
+        let contract_address = env.current_contract_address();
+        let allowance_in = client_in.allowance(&user, &contract_address);
+        if allowance_in < amount_in as i128 {
+            panic!("Insufficient input token allowance");
+        }
+        
+        // Transfer input token to contract
+        client_in.transfer(&user, &contract_address, &(amount_in as i128));
+        
+        // Calculate output amount (0.3% fee)
+        let amount_out = amount_in * 997 / 1000;
+        
+        if amount_out < min_amount_out {
+            panic!("Insufficient output amount");
+        }
+        
+        // Check contract has enough output tokens
+        let contract_balance_out = client_out.balance(&contract_address);
+        if contract_balance_out < amount_out as i128 {
+            panic!("Insufficient liquidity");
+        }
+        
+        // Transfer output tokens to user
+        client_out.transfer(&contract_address, &user, &(amount_out as i128));
+        
+        amount_out
     }
 
     /// Get user nonce
