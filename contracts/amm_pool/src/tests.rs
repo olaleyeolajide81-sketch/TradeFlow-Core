@@ -706,3 +706,26 @@ fn test_freeze_is_address_specific() {
     assert!(pool.is_frozen(&addr1));
     assert!(!pool.is_frozen(&addr2));
 }
+
+#[test]
+fn test_calculate_single_sided_deposit_split() {
+    let env = Env::default();
+
+    // Scenario: User has 1000 units, pool has 1,000,000/1,000,000 reserves (deep pool).
+    // In a deep pool where slippage is negligible, the fee (0.3%) requires 
+    // swapping slightly more than half (500.75 units) to ensure the 
+    // remaining 499.25 units match the value of the received (swapped) tokens.
+    let amount_in = 1000;
+    let reserve_in = 1_000_000;
+    let reserve_out = 1_000_000;
+    
+    let swap_amount = AmmPool::calculate_single_sided_deposit_split(
+        env.clone(),
+        amount_in,
+        reserve_in,
+        reserve_out
+    );
+
+    // s ≈ 500.62 for this depth. Integer floor is 500.
+    assert_eq!(swap_amount, 500);
+}

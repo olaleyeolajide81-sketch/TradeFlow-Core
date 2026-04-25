@@ -244,12 +244,13 @@ impl AmmPool {
         );
     }
 
-    /// Calculate the output amount for a given input amount.
+    /// Calculate the output amount for a given input amount, applying the pool's fee tier.
     ///
     /// Scaling formulas:
     /// - scaled = raw * 10^(18 - token_decimals)
     /// - output_native = output_scaled / 10^(18 - target_decimals)
     ///
+    /// Uses constant-product formula (x*y=k) with fee deduction from input.
     /// Uses saturating arithmetic to prevent overflows and rounding half-up for output.
     pub fn calculate_amount_out(env: Env, amount_in: i128, is_a_in: bool) -> i128 {
         let state: PoolState = env.storage().instance().get(&DataKey::State).expect("Not initialized");
@@ -275,10 +276,13 @@ impl AmmPool {
         let scale_out = 10i128.pow((18 - decimals_out) as u32);
         let reserve_out_scaled = reserve_out.saturating_mul(scale_out);
 
-        // Constant-product calculation (x * y = k)
-        // amount_out_scaled = (reserve_out_scaled * amount_in_scaled) / (reserve_in_scaled + amount_in_scaled)
-        let numerator = reserve_out_scaled.saturating_mul(amount_in_scaled);
-        let denominator = reserve_in_scaled.saturating_add(amount_in_scaled);
+        // Constant-product calculation (x * y = k) with fee
+        let fee_multiplier = 10000i128.saturating_sub(state.fee_tier as i128);
+        let amount_in_with_fee = amount_in_scaled.saturating_mul(fee_multiplier);
+
+        // amount_out_scaled = (reserve_out_scaled * amount_in_with_fee) / (reserve_in_scaled * 10000 + amount_in_with_fee)
+        let numerator = reserve_out_scaled.saturating_mul(amount_in_with_fee);
+        let denominator = reserve_in_scaled.saturating_mul(10000).saturating_add(amount_in_with_fee);
 
         if denominator == 0 {
             return 0;
@@ -308,11 +312,12 @@ impl AmmPool {
         output_native
     }
 
-    /// Calculate the input amount required for a given output amount (Exact Output).
+    /// Calculate the input amount required for a given output amount (Exact Output), 
+    /// accounting for the pool's fee tier.
     ///
     /// # Formula:
-    /// numerator = reserve_in * amount_out * 1000
-    /// denominator = (reserve_out - amount_out) * 997
+    /// numerator = reserve_in * amount_out * 10000
+    /// denominator = (reserve_out - amount_out) * (10000 - fee_tier)
     /// amount_in = (numerator / denominator) + 1 (to round up)
     ///
     /// # Arguments:
@@ -323,11 +328,12 @@ impl AmmPool {
     /// # Returns:
     /// The calculated amount_in required to receive the desired amount_out.
     pub fn calculate_amount_in(
-        _env: Env,
+        env: Env,
         amount_out: i128,
         reserve_in: i128,
         reserve_out: i128,
     ) -> i128 {
+        let state: PoolState = env.storage().instance().get(&DataKey::State).expect("Not initialized");
         if amount_out <= 0 || reserve_in <= 0 || reserve_out <= 0 {
             return 0;
         }
@@ -335,11 +341,13 @@ impl AmmPool {
             panic!("Insufficient liquidity for requested output");
         }
 
+        let fee_multiplier = 10000i128.saturating_sub(state.fee_tier as i128);
+
         let numerator = reserve_in
             .saturating_mul(amount_out)
-            .saturating_mul(1000);
+            .saturating_mul(10000);
         let denominator = (reserve_out.saturating_sub(amount_out))
-            .saturating_mul(997);
+            .saturating_mul(fee_multiplier);
 
         // Ceiling division: (numerator + denominator - 1) / denominator
         let amount_in = (numerator.saturating_add(denominator).saturating_sub(1)) / denominator;
@@ -404,5 +412,87 @@ impl AmmPool {
         let reserve_b = state.reserve_b as u128;
 
         reserve_a.saturating_mul(10_000_000) / reserve_b
+    }
+
+    /// Calculate the amount of token_in to swap for token_out to achieve a balanced 50/50 
+    /// liquidity provision for a single-sided deposit.
+    ///
+    /// # Requirements:
+    /// - Account for a standard 0.3% swap fee (30 basis points).
+    /// - Determine the split that results in zero "dust" (leftover tokens) after the swap and deposit.
+    ///
+    /// # Mathematical Derivation:
+    /// For a constant product pool (x * y = k), let:
+    /// A = amount_in (total amount user has)
+    /// R = reserve_in (current pool reserve of input asset)
+    /// s = swap_amount (what we are solving for)
+    /// f = fee (0.003 for 0.3%)
+    /// g = 1 - f (0.997)
+    ///
+    /// To avoid dust, the ratio of the user's remaining asset to the new pool reserve
+    /// must match the ratio of the received asset to its new pool reserve:
+    /// (A - s) / (R + s) = swap_out / (reserve_out - swap_out)
+    ///
+    /// Since (swap_out / reserve_out_new) = (g * s) / R for a constant product pool:
+    /// (A - s) / (R + s) = (g * s) / R
+    /// R * (A - s) = g * s * (R + s) 
+    /// RA - Rs = gRs + gs^2  =>  gs^2 + R(1+g)s - RA = 0
+    ///
+    /// Solving for s using the quadratic formula:
+    /// s = [-R(1+g) + sqrt((R(1+g))^2 + 4 * g * A * R)] / (2 * g)
+    pub fn calculate_single_sided_deposit_split(
+        _env: Env,
+        amount_in: i128,
+        reserve_in: i128,
+        reserve_out: i128,
+    ) -> i128 {
+        if amount_in <= 0 || reserve_in <= 0 || reserve_out <= 0 {
+            return 0;
+        }
+
+        // Using basis points for precision (B = 10000, fee = 30 for 0.3%)
+        let b: i128 = 10000;
+        let fee: i128 = 30;
+        let gamma: i128 = b.saturating_sub(fee); // 9970 (represents 1-f)
+        let sum_b_gamma: i128 = b.saturating_add(gamma); // 19970 (represents 2-f)
+
+        // Quadratic Coefficients for solving: gamma*s^2 + R(1+gamma)*s - AR = 0
+        // scaled to maintain integer precision using basis points (b)
+        let a_coeff = gamma;
+        let b_coeff = reserve_in.saturating_mul(sum_b_gamma);
+        let c_coeff_abs = amount_in.saturating_mul(reserve_in).saturating_mul(b);
+
+        // Discriminant: D = b^2 - 4ac
+        // Since c is negative (-AR), we add the absolute value: D = b^2 + 4a|c|
+        // Note: For 18-decimal tokens, these intermediate values may exceed i128. 
+        // Saturating arithmetic is used here as a protective scaffold.
+        let term_4ac = (4i128).saturating_mul(a_coeff).saturating_mul(c_coeff_abs);
+        let discriminant = b_coeff.saturating_mul(b_coeff).saturating_add(term_4ac);
+        let sqrt_d = Self::isqrt(discriminant);
+
+        let numerator = sqrt_d.saturating_sub(b_coeff);
+        let denominator = (2i128).saturating_mul(a_coeff);
+
+        if denominator == 0 {
+            return 0;
+        }
+
+        // Final swap amount in native units
+        numerator / denominator
+    }
+
+    /// Internal helper: Integer Square Root using Newton's Method.
+    fn isqrt(n: i128) -> i128 {
+        if n <= 0 {
+            return 0;
+        }
+        let mut x = n;
+        let mut y = (x.saturating_add(1)) / 2;
+        while y < x {
+            x = y;
+            let div = n / x;
+            y = (x.saturating_add(div)) / 2;
+        }
+        x
     }
 }
