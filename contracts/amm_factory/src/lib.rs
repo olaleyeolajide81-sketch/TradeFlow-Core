@@ -20,6 +20,7 @@ pub enum DataKey {
     Pools, // Map of (TokenA, TokenB) -> Pool
     PoolWasmHash, // The Wasm hash of the Pool contract to deploy
     Admin, // The address of the factory admin
+    TotalPools, // The total number of pools deployed
 }
 
 #[contract]
@@ -44,6 +45,7 @@ impl FactoryContract {
         env.storage().instance().set(&DataKey::FeeTo, &fee_to);
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::PoolWasmHash, &pool_wasm_hash);
+        env.storage().instance().set(&DataKey::TotalPools, &0u32);
     }
 
     /// Helper function to sort two token addresses, creating a canonical pair
@@ -151,6 +153,11 @@ impl FactoryContract {
         pools.set((token_0, token_1), pool);
         env.storage().instance().set(&DataKey::Pools, &pools);
 
+        // Increment total pools counter for UI metrics and pagination logic
+        let mut total_pools: u32 = env.storage().instance().get(&DataKey::TotalPools).unwrap_or(0);
+        total_pools += 1;
+        env.storage().instance().set(&DataKey::TotalPools, &total_pools);
+
         // Emit PoolCreated event
         env.events().publish(
             (symbol_short!("PoolCreated"), token_a, token_b),
@@ -211,5 +218,11 @@ impl FactoryContract {
             (symbol_short!("Admin"), Symbol::new(&env, "PoolStatus"), token_a, token_b),
             pool.paused
         );
+    }
+
+    /// Returns the total number of pools created by the factory.
+    /// This is used for UI metrics and pagination logic.
+    pub fn get_all_pools_length(env: Env) -> u32 {
+        env.storage().instance().get(&DataKey::TotalPools).unwrap_or(0)
     }
 }

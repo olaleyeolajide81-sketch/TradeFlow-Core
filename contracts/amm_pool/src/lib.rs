@@ -98,6 +98,9 @@ impl AmmPool {
         user.require_auth();
         Self::require_not_frozen(&env, &user);
         let mut state: PoolState = env.storage().instance().get(&DataKey::State).expect("Not initialized");
+        if state.is_deprecated {
+            panic!("Pool is deprecated");
+        }
         if state.deposits_paused {
             panic!("deposits are paused");
         }
@@ -168,6 +171,22 @@ impl AmmPool {
         let mut state: PoolState = env.storage().instance().get(&DataKey::State).expect("Not initialized");
         state.withdrawals_paused = paused;
         env.storage().instance().set(&DataKey::State, &state);
+    }
+
+    /// Admin-only: Permanently deprecate the pool.
+    /// This is an irreversible one-way toggle.
+    /// Swaps and new liquidity provision are disabled, but withdrawals remain active.
+    pub fn set_deprecated(env: Env) {
+        Self::require_admin(&env);
+        let mut state: PoolState = env.storage().instance().get(&DataKey::State).expect("Not initialized");
+        state.is_deprecated = true;
+        env.storage().instance().set(&DataKey::State, &state);
+
+        // Emit event for transparency
+        env.events().publish(
+            (symbol_short!("Admin"), symbol_short!("Deprecat")),
+            env.current_contract_address()
+        );
     }
 
     /// Verify that `user` holds at least `required_amount` of `token` and has granted
@@ -370,6 +389,9 @@ impl AmmPool {
     pub fn swap(env: Env, user: Address, amount_in: i128, is_a_in: bool) -> i128 {
         Self::require_not_frozen(&env, &user);
         let state: PoolState = env.storage().instance().get(&DataKey::State).expect("Not initialized");
+        if state.is_deprecated {
+            panic!("Pool is deprecated");
+        }
         if state.deposits_paused {
             panic!("deposits are paused");
         }
